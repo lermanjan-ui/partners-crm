@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ card.title }} — {{ card.code }}{% endblock %}
+{% block content %}
+<h1>{{ card.title }} <span class="muted">{{ card.code }}</span></h1>
+<p class="muted">Добавил {{ card.created_by or '—' }} · {{ card.created_at|dt('%d.%m.%Y %H:%M') }} · источник: {{ card.source }}</p>
+
+{% if card.ocr_status == 'processing' %}<p class="note-box">⏳ Визитка распознаётся — обновите страницу через несколько секунд.</p>{% endif %}
+{% if card.ocr_status == 'error' %}<p class="note-box warn">⚠️ Распознать не удалось: {{ card.ocr_error }}</p>{% endif %}
+{% if card.unreadable %}<p class="note-box warn">⚠️ Проверьте поля: {% for f in card.unreadable %}{{ FIELD_LABELS.get(f, f) }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+{% for other, why in similar %}<p class="note-box">🔁 Похоже на <a href="/c/{{ other.id }}">{{ other.code }} {{ other.title }}</a> — {{ why }}</p>{% endfor %}
+
+<div class="grid">
+<section>
+  {% if photos %}
+  <div class="photos">
+    {% for a in photos %}
+      {% if a.mime and a.mime.startswith('image/') %}<a href="/f/{{ a.id }}" target="_blank"><img src="/f/{{ a.id }}" alt="Визитка"></a>
+      {% else %}<a class="file" href="/f/{{ a.id }}" target="_blank">📄 {{ a.filename }}</a>{% endif %}
+    {% endfor %}
+  </div>
+  <form method="post" action="/c/{{ card.id }}/ocr"><button class="btn ghost">Распознать заново</button></form>
+  {% endif %}
+
+  <form method="post" action="/c/{{ card.id }}" class="panel fields">
+    <label>Статус
+      <select name="status">{% for k, v in STATUSES.items() %}<option value="{{ k }}" {% if k == card.status %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
+    </label>
+    {% for f in TEXT_FIELDS %}
+      <label class="{% if f in card.unreadable %}warn{% endif %}">{{ FIELD_LABELS[f] }}
+        {% if f == 'address' %}<textarea name="{{ f }}" rows="2">{{ card[f] or '' }}</textarea>
+        {% else %}<input name="{{ f }}" value="{{ card[f] or '' }}">{% endif %}
+      </label>
+    {% endfor %}
+    {% for f in LIST_FIELDS %}
+      <label class="{% if f in card.unreadable %}warn{% endif %}">{{ FIELD_LABELS[f] }} <span class="muted">(по одному в строке)</span>
+        <textarea name="{{ f }}" rows="{{ [card[f]|length + 1, 2]|max }}">{{ card[f]|join('\n') }}</textarea>
+      </label>
+    {% endfor %}
+    <button class="btn">Сохранить</button>
+    <p class="muted small">Поля, исправленные вручную, повторное распознавание не перезаписывает.</p>
+  </form>
+</section>
+
+<section>
+  <form method="post" action="/c/{{ card.id }}/note" enctype="multipart/form-data" class="panel">
+    <label>Заметка<textarea name="text" rows="3" placeholder="О чём договорились, следующий шаг…"></textarea></label>
+    <input type="file" name="file">
+    <button class="btn">Добавить</button>
+  </form>
+  <h2>История</h2>
+  {% for n in notes %}
+    <div class="note">
+      <div class="muted small">{{ n.author or '—' }} · {{ n.created_at|dt('%d.%m.%Y %H:%M') }} · {{ 'Telegram' if n.source == 'bot' else 'CRM' }}{% if n.edited_at %} · изменено{% endif %}</div>
+      {% if n.text %}<div class="text">{{ n.text }}</div>{% endif %}
+      {% if n.attachment_id and att_by_id.get(n.attachment_id) %}{% set a = att_by_id[n.attachment_id] %}
+        {% if a.kind == 'voice' %}<audio controls preload="none" src="/f/{{ a.id }}"></audio>
+        {% elif a.mime and a.mime.startswith('image/') %}<a href="/f/{{ a.id }}" target="_blank"><img class="att" src="/f/{{ a.id }}" alt=""></a>
+        {% else %}<a href="/f/{{ a.id }}" target="_blank">📎 {{ a.filename }}</a>{% endif %}
+      {% endif %}
+      {% if n.prev_text %}<details class="small"><summary>Прошлая версия</summary>{{ n.prev_text }}</details>{% endif %}
+    </div>
+  {% else %}
+    <p class="muted">Заметок нет. В Telegram ответьте на визитку, чтобы добавить.</p>
+  {% endfor %}
+
+  {% if card.raw_text %}<details class="panel"><summary>Весь текст визитки</summary><pre>{{ card.raw_text }}</pre></details>{% endif %}
+
+  <form method="post" action="/c/{{ card.id }}/delete" onsubmit="return confirm('Удалить контакт {{ card.code }} со всеми фото и заметками?')">
+    <button class="btn danger">Удалить контакт</button>
+  </form>
+</section>
+</div>
+{% endblock %}

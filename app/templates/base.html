@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Партнёры{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{% if user %}
+<header class="top">
+  <a href="/" class="brand">Партнёры</a>
+  <nav>
+    <a href="/c/new" class="btn">+ Контакт</a>
+    <a href="/export.csv">CSV</a>
+    <a href="/logout" class="muted">Выйти</a>
+  </nav>
+</header>
+{% endif %}
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

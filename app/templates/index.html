@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<form class="filters" method="get">
+  <input name="q" value="{{ q }}" placeholder="Поиск: имя, компания, телефон, email, текст визитки" type="search">
+  <select name="status" onchange="this.form.submit()">
+    <option value="">Все статусы</option>
+    {% for k, v in STATUSES.items() %}<option value="{{ k }}" {% if k == status %}selected{% endif %}>{{ v }}</option>{% endfor %}
+  </select>
+  <button class="btn">Найти</button>
+</form>
+<p class="muted">Контактов: {{ cards|length }}</p>
+<div class="list">
+{% for c in cards %}
+  <a class="row" href="/c/{{ c.id }}">
+    {% if thumbs.get(c.id) %}<img class="thumb" src="/f/{{ thumbs[c.id] }}" loading="lazy" alt="">{% else %}<span class="thumb empty">—</span>{% endif %}
+    <span class="main">
+      <b>{{ c.title }}</b> <span class="muted">{{ c.code }}</span><br>
+      <span>{{ c.position or '' }}{% if c.position and c.company and c.company != c.title %} · {% endif %}{% if c.company != c.title %}{{ c.company or '' }}{% endif %}</span>
+    </span>
+    <span class="contacts">
+      {% for p in c.phones[:2] %}{{ p }}<br>{% endfor %}
+      {% for e in c.emails[:1] %}{{ e }}{% endfor %}
+    </span>
+    <span class="meta">
+      <span class="tag s-{{ c.status }}">{{ STATUSES.get(c.status, c.status) }}</span>
+      {% if c.ocr_status == 'processing' %}<span class="tag">⏳ распознаётся</span>{% endif %}
+      {% if c.unreadable or c.ocr_status == 'error' %}<span class="tag warn">проверить</span>{% endif %}
+      <span class="muted">{{ c.created_at|dt('%d.%m %H:%M') }}{% if counts.get(c.id) %} · 📝 {{ counts[c.id] }}{% endif %}</span>
+    </span>
+  </a>
+{% else %}
+  <p class="muted">Пока пусто. Отправьте фото визитки боту.</p>
+{% endfor %}
+</div>
+{% endblock %}

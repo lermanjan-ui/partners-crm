@@ -1,0 +1,36 @@
+# Render Blueprint: веб-сервис + PostgreSQL. Render → New → Blueprint → выбрать этот репозиторий.
+databases:
+  - name: partners-crm-db
+    plan: basic-256mb        # платная (~$6/мес): бесплатная база Render удаляется через 30 дней
+    databaseName: partners_crm
+    user: partners_crm
+    region: frankfurt
+
+services:
+  - type: web
+    name: partners-crm
+    runtime: python
+    plan: starter            # не free: free засыпает, и бот отвечает с задержкой до минуты
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DATABASE_URL
+        fromDatabase:
+          name: partners-crm-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # токен от @BotFather
+      - key: TELEGRAM_ALLOWED_IDS
+        sync: false          # ID двух сотрудников через запятую: 123456789,987654321
+      - key: WEB_USERS
+        sync: false          # логины и пароли для сайта: anna:пароль1,boris:пароль2
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-6-luna   # gpt-4.1 и gpt-4o OpenAI отключает 14.01.2027

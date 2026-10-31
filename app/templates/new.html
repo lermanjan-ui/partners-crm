@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Новый контакт{% endblock %}
+{% block content %}
+<form method="post" action="/c/new" enctype="multipart/form-data" class="panel">
+  <h1>Новый контакт</h1>
+  <label>Фото или PDF визитки<input type="file" name="photo" accept="image/jpeg,image/png,image/webp,application/pdf" capture="environment"></label>
+  <p class="muted">Или без визитки:</p>
+  <label>Имя<input name="name"></label>
+  <label>Компания<input name="company"></label>
+  <button class="btn">Создать</button>
+</form>
+{% endblock %}
