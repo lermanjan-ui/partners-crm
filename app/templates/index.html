@@ -16,6 +16,7 @@
     <span class="main">
       <b>{{ c.title }}</b> <span class="muted">{{ c.code }}</span><br>
       <span>{{ c.position or '' }}{% if c.position and c.company and c.company != c.title %} · {% endif %}{% if c.company != c.title %}{{ c.company or '' }}{% endif %}</span>
+      {% if c.summary %}<span class="sumline">{{ c.summary|replace('\n', ' · ')|truncate(160) }}</span>{% endif %}
     </span>
     <span class="contacts">
       {% for p in c.phones[:2] %}{{ p }}<br>{% endfor %}

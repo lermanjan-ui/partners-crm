@@ -49,6 +49,8 @@ class Card(Base):
     source: Mapped[str] = mapped_column(String(20), default="bot")  # bot | web | form (на будущее)
     ocr_status: Mapped[str] = mapped_column(String(20), default="none")  # none | processing | done | error
     ocr_error: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)  # ИИ-сводка по контакту (по визитке и всем заметкам)
+    summary_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[str | None] = mapped_column(String(100))
     tg_chat_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -82,6 +84,10 @@ class Note(Base):
     card_id: Mapped[int | None] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), index=True)
     text: Mapped[str | None] = mapped_column(Text)
     prev_text: Mapped[str | None] = mapped_column(Text)  # прошлая версия при редактировании в Telegram
+    transcript: Mapped[str | None] = mapped_column(Text)  # полная расшифровка голосового
+    summary: Mapped[str | None] = mapped_column(Text)     # короткая выжимка (голосовые и длинные тексты)
+    ai_status: Mapped[str] = mapped_column(String(20), default="none")  # none | processing | done | error
+    ai_error: Mapped[str | None] = mapped_column(Text)
     author: Mapped[str | None] = mapped_column(String(100))
     source: Mapped[str] = mapped_column(String(20), default="bot")
     attachment_id: Mapped[int | None] = mapped_column(ForeignKey("attachments.id", ondelete="SET NULL"))
@@ -127,3 +133,27 @@ def init_db(url: str) -> None:
     engine = create_engine(url, **kwargs)
     SessionLocal.configure(bind=engine)
     Base.metadata.create_all(engine)
+    migrate()
+
+
+# Новые колонки для уже существующей базы (create_all добавляет только новые таблицы).
+NEW_COLUMNS = {
+    "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP"},
+    "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT"},
+}
+
+
+def migrate(eng=None) -> None:
+    from sqlalchemy import inspect, text
+
+    eng = eng or engine
+    insp = inspect(eng)
+    pg = eng.dialect.name == "postgresql"
+    with eng.begin() as conn:
+        for table, cols in NEW_COLUMNS.items():
+            have = {c["name"] for c in insp.get_columns(table)}
+            for name, ddl in cols.items():
+                if name not in have:
+                    if pg and ddl == "TIMESTAMP":
+                        ddl = "TIMESTAMP WITH TIME ZONE"
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))

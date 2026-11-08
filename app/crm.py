@@ -7,9 +7,9 @@ import time
 
 from sqlalchemy import select
 
-from . import ocr
+from . import ai, ocr
 from .config import settings
-from .db import FIELD_LABELS, Attachment, Card, SessionLocal, TgLink
+from .db import FIELD_LABELS, Attachment, Card, Note, SessionLocal, TgLink, now
 from .tg import Telegram, esc
 
 log = logging.getLogger("crm")
@@ -26,11 +26,18 @@ def parse_card_id(text: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def haystack(card: Card) -> str:
+def haystack(card: Card, notes_text: str = "") -> str:
     parts = [card.code, card.full_name, card.position, card.company, card.website, card.address, card.country,
-             card.raw_text, *(card.emails or []), *(card.socials or [])]
+             card.raw_text, card.summary, notes_text, *(card.emails or []), *(card.socials or [])]
     parts += [ocr.phone_key(p) for p in card.phones or []]
     return " ".join(p for p in parts if p).lower()
+
+
+def notes_text_by_card(s) -> dict[int, str]:
+    out: dict[int, list[str]] = {}
+    for cid, text, transcript in s.execute(select(Note.card_id, Note.text, Note.transcript).where(Note.card_id.is_not(None))):
+        out.setdefault(cid, []).extend(x for x in (text, transcript) if x)
+    return {k: " ".join(v) for k, v in out.items()}
 
 
 def search(s, query: str, limit: int = 10) -> list[Card]:
@@ -42,9 +49,10 @@ def search(s, query: str, limit: int = 10) -> list[Card]:
     words = [w.lower() for w in query.split() if w]
     digits = re.sub(r"\D", "", query)
     cards = s.scalars(select(Card).order_by(Card.updated_at.desc())).all()
+    notes = notes_text_by_card(s)
     out = []
     for c in cards:
-        h = haystack(c)
+        h = haystack(c, notes.get(c.id, ""))
         if all(w in h for w in words) or (len(digits) >= 5 and digits in h):
             out.append(c)
     return out[:limit]
@@ -97,6 +105,8 @@ def summary(s, card: Card) -> str:
         lines.append("⚠️ Распознать не удалось — фото сохранено, данные можно внести в CRM.")
     elif card.ocr_status == "done" and not (card.full_name or card.company or card.phones or card.emails):
         lines.append("⚠️ Контакты не найдены — фото сохранено.")
+    if card.summary:
+        lines.append(f"\n🧠 <b>Сводка</b>\n{esc(card.summary)}")
     if card.unreadable:
         lines.append("⚠️ Проверить: " + ", ".join(FIELD_LABELS.get(f, f) for f in card.unreadable))
     for other, why in similar(s, card):
@@ -154,6 +164,7 @@ def run_ocr(card_id: int, attachment_ids: list[int] | None, tg: Telegram | None 
         else:
             card.ocr_status, card.ocr_error = "error", error
         s.commit()
+        has_notes = s.scalar(select(Note.id).where(Note.card_id == card_id).limit(1)) is not None
         if tg and chat_id:
             try:
                 sent = tg.send(chat_id, summary(s, card), reply_to=reply_to, buttons=card_buttons(card))
@@ -161,7 +172,153 @@ def run_ocr(card_id: int, attachment_ids: list[int] | None, tg: Telegram | None 
                 s.commit()
             except Exception:  # noqa: BLE001
                 log.exception("cannot send OCR result for card %s", card_id)
+    if result is not None and has_notes:
+        schedule_card_summary(card_id)
+
+
+def spawn(fn, *args) -> None:
+    """Фоновая задача. В тестах подменяется синхронным вызовом."""
+    threading.Thread(target=fn, args=args, daemon=True).start()
 
 
 def start_ocr(card_id, attachment_ids, tg=None, chat_id=None, reply_to=None, delay=0) -> None:
-    threading.Thread(target=run_ocr, args=(card_id, attachment_ids, tg, chat_id, reply_to, delay), daemon=True).start()
+    spawn(run_ocr, card_id, attachment_ids, tg, chat_id, reply_to, delay)
+
+
+# ---------- голосовые, выжимки и сводка ----------
+
+def is_audio(att: Attachment | None) -> bool:
+    if att is None:
+        return False
+    mime = att.mime or ""
+    return att.kind == "voice" or mime.startswith("audio/") or mime.startswith("video/")
+
+
+def needs_ai(note: Note, att: Attachment | None) -> bool:
+    return is_audio(att) or len(note.text or "") >= settings.summary_min_chars
+
+
+def card_info(card: Card) -> str:
+    parts = [card.full_name, card.position, card.company, card.website, card.country,
+             ", ".join(card.phones or []), ", ".join(card.emails or [])]
+    return " · ".join(p for p in parts if p) or card.title
+
+
+def process_note(note_id: int, tg: Telegram | None = None) -> None:
+    """Расшифровка голосового и/или короткая выжимка заметки. Затем — обновление сводки по контакту."""
+    with SessionLocal() as s:
+        note = s.get(Note, note_id)
+        if note is None:
+            return
+        att = s.get(Attachment, note.attachment_id) if note.attachment_id else None
+        audio = is_audio(att)
+        data, fname, mime = (att.data, att.filename, att.mime) if audio else (None, None, None)
+        text = note.text or ""
+        card = s.get(Card, note.card_id) if note.card_id else None
+        ctx = card_info(card) if card else ""
+    transcript, summary, error = None, None, None
+    try:
+        if audio:
+            transcript = ai.transcribe(data, fname, mime)
+        base = "\n".join(x for x in (text, transcript) if x).strip()
+        if base and (audio or len(base) >= settings.summary_min_chars):
+            summary = ai.summarize_note(base, ctx)
+    except Exception as e:  # noqa: BLE001 — оригинал заметки сохранён, ошибка только помечается
+        log.exception("AI failed for note %s", note_id)
+        error = str(e)[:500]
+    with LOCK, SessionLocal() as s:
+        note = s.get(Note, note_id)
+        if note is None:
+            return
+        if transcript is not None:
+            note.transcript = transcript
+        if summary is not None:
+            note.summary = summary
+        note.ai_status, note.ai_error = ("error", error) if error else ("done", None)
+        s.commit()
+        card = s.get(Card, note.card_id) if note.card_id else None
+        if tg and note.tg_chat_id and audio:
+            try:
+                sent = tg.send(note.tg_chat_id, voice_message(card, note), reply_to=note.tg_message_id,
+                               buttons=card_buttons(card) if card else None)
+                link(s, note.tg_chat_id, sent["message_id"], "note", card_id=note.card_id, note_id=note.id)
+                s.commit()
+            except Exception:  # noqa: BLE001
+                log.exception("cannot send transcript for note %s", note_id)
+        card_id = note.card_id
+    if card_id:
+        schedule_card_summary(card_id)
+
+
+def voice_message(card: Card | None, note: Note) -> str:
+    head = f"🎙 <b>{card.code}</b> {esc(card.title)}" if card else "🎙 Голосовое"
+    if note.ai_status == "error":
+        return f"{head}\n⚠️ Не удалось расшифровать: {esc(note.ai_error)}\nАудио сохранено."
+    lines = [head]
+    if note.summary:
+        lines.append(f"<b>Кратко:</b> {esc(note.summary)}")
+    if note.transcript:
+        full = note.transcript if len(note.transcript) <= 2500 else note.transcript[:2500] + " … (полностью — в CRM)"
+        lines.append(f"<blockquote expandable>{esc(full)}</blockquote>")
+    elif not note.summary:
+        lines.append("Речь не распознана — аудио сохранено.")
+    return "\n".join(lines)
+
+
+def start_note_ai(note_id: int, tg: Telegram | None = None) -> None:
+    spawn(process_note, note_id, tg)
+
+
+_sum_lock = threading.Lock()
+_sum_running: set[int] = set()
+_sum_dirty: set[int] = set()
+
+
+def schedule_card_summary(card_id: int) -> None:
+    """Пересобрать сводку по контакту. Если пересборка уже идёт — повторить её после (берём свежие заметки)."""
+    with _sum_lock:
+        if card_id in _sum_running:
+            _sum_dirty.add(card_id)
+            return
+        _sum_running.add(card_id)
+    spawn(_card_summary_loop, card_id)
+
+
+def _card_summary_loop(card_id: int) -> None:
+    try:
+        while True:
+            try:
+                build_card_summary(card_id)
+            except Exception:  # noqa: BLE001
+                log.exception("card summary failed for %s", card_id)
+            with _sum_lock:
+                if card_id in _sum_dirty:
+                    _sum_dirty.discard(card_id)
+                    continue
+                return
+    finally:
+        with _sum_lock:
+            _sum_running.discard(card_id)
+
+
+def build_card_summary(card_id: int) -> None:
+    with SessionLocal() as s:
+        card = s.get(Card, card_id)
+        if card is None:
+            return
+        info = card_info(card)
+        if card.raw_text:
+            info += "\nТекст визитки: " + card.raw_text[:1500]
+        notes = []
+        for n in s.scalars(select(Note).where(Note.card_id == card_id).order_by(Note.created_at)):
+            body = "\n".join(x for x in (n.text, n.transcript) if x).strip()
+            if body:
+                notes.append(f"[{n.created_at:%d.%m %H:%M}, {n.author or '—'}] {body[:4000]}")
+    if not notes:
+        return
+    summary = ai.summarize_card(info, notes[-60:])
+    with LOCK, SessionLocal() as s:
+        card = s.get(Card, card_id)
+        if card is not None:
+            card.summary, card.summary_at = summary, now()
+            s.commit()

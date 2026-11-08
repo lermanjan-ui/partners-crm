@@ -13,7 +13,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from app import crm, main, ocr  # noqa: E402
+from app import ai, crm, main, ocr  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import Card, Note, SessionLocal  # noqa: E402
 
@@ -53,13 +53,24 @@ def fake_extract(files):
     }
 
 
+AI = {"fail": False}
+
+
+def fake_transcribe(data, filename, mime):
+    if AI["fail"]:
+        raise ai.AiError("OpenAI 500: boom")
+    return "Обсудили поставку оборудования, нужна презентация до пятницы, бюджет около 50 тысяч долларов"
+
+
 @pytest.fixture(scope="module")
 def env():
     fake = FakeTg()
     main.tg = fake
     ocr.extract = fake_extract
-    crm.start_ocr = lambda *a, **k: crm.run_ocr(a[0], a[1], a[2] if len(a) > 2 else None,
-                                                 a[3] if len(a) > 3 else None, a[4] if len(a) > 4 else None)
+    crm.spawn = lambda fn, *a: fn(*a)  # фоновые задачи — синхронно
+    ai.transcribe = fake_transcribe
+    ai.summarize_note = lambda text, ctx="": "КРАТКО: " + text[:40]
+    ai.summarize_card = lambda info, notes: f"Кто: {info[:30]}\nЗаметок: {len(notes)}"
     with TestClient(main.app) as client:
         yield client, fake
 
@@ -212,3 +223,87 @@ def test_pdf_to_image():
     doc.new_page().insert_text((50, 50), "Test")
     imgs = ocr.to_images(doc.tobytes(), "application/pdf")
     assert imgs and imgs[0][:4] == b"\x89PNG"
+
+
+def test_voice_and_summaries(env):
+    client, tg = env
+    # новая визитка
+    post(client, **msg(400, photo=[{"file_id": "v1", "file_size": 10}]))
+    with SessionLocal() as s:
+        card = last_card(s)
+    # голосовое ответом на визитку → расшифровка + выжимка + ответ бота
+    post(client, **msg(401, reply_to=400, voice={"file_id": "voice", "file_size": 10, "mime_type": "audio/ogg"}))
+    with SessionLocal() as s:
+        n = s.query(Note).filter_by(tg_message_id=401).one()
+        assert n.card_id == card.id and n.ai_status == "done"
+        assert n.transcript.startswith("Обсудили поставку") and n.summary.startswith("КРАТКО: Обсудили")
+        assert s.get(Card, card.id).summary.startswith("Кто:")
+    voice_reply = tg.sent[-1]
+    assert voice_reply["reply_to"] == 401 and "Кратко" in voice_reply["text"] and "blockquote expandable" in voice_reply["text"]
+    # ответ на сообщение с расшифровкой — к той же визитке
+    post(client, **msg(402, reply_to=voice_reply["id"], text="короткая"))
+    with SessionLocal() as s:
+        short = s.query(Note).filter_by(tg_message_id=402).one()
+        assert short.card_id == card.id and short.summary is None and short.ai_status == "none"
+        assert "Заметок: 2" in s.get(Card, card.id).summary
+    # длинный текст → выжимка
+    long_text = "Очень длинная заметка " * 20
+    post(client, **msg(403, reply_to=400, text=long_text))
+    with SessionLocal() as s:
+        assert s.query(Note).filter_by(tg_message_id=403).one().summary.startswith("КРАТКО")
+    # голосовое без ответа: спрашивает «К кому это?», расшифровку присылает сразу; после выбора — сводка обновляется
+    post(client, **msg(404, voice={"file_id": "v", "file_size": 10}))
+    ask = next(m for m in reversed(tg.sent) if "К кому это" in m["text"])
+    assert "Кратко" in tg.sent[-1]["text"]
+    cb = next(row[0][1] for row in ask["buttons"] if row[0][1].endswith(f":{card.id}"))
+    post(client, "callback_query", id="q2", data=cb, **{"from": {"id": 1}, "message": {"message_id": ask["id"], "chat": {"id": 1}}})
+    with SessionLocal() as s:
+        assert s.query(Note).filter_by(tg_message_id=404).one().card_id == card.id
+        assert "Заметок: 4" in s.get(Card, card.id).summary
+    # ошибка расшифровки: аудио сохранено, бот сообщает, заметка помечена
+    AI["fail"] = True
+    post(client, **msg(405, reply_to=400, voice={"file_id": "v", "file_size": 10}))
+    AI["fail"] = False
+    assert "Не удалось расшифровать" in tg.sent[-1]["text"]
+    with SessionLocal() as s:
+        n = s.query(Note).filter_by(tg_message_id=405).one()
+        assert n.ai_status == "error" and n.attachment_id
+    # карточка в боте показывает сводку
+    post(client, "callback_query", id="q3", data=f"c:{card.id}", **{"from": {"id": 1}, "message": {"message_id": 1, "chat": {"id": 1}}})
+    assert "Сводка" in tg.sent[-1]["text"]
+    # сайт: сводка, расшифровка, повтор обработки, поиск по расшифровке
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get(f"/c/{card.id}").text
+    assert "Сводка" in page and "Расшифровка" in page and "Повторить" in page
+    with SessionLocal() as s:
+        failed_id = s.query(Note).filter_by(tg_message_id=405).one().id
+    client.post(f"/n/{failed_id}/ai")
+    with SessionLocal() as s:
+        assert s.get(Note, failed_id).ai_status == "done"
+    assert f"#P{card.id}" in client.get("/?q=презентация").text
+    # аудиофайл через сайт расшифровывается
+    client.post(f"/c/{card.id}/note", data={"text": ""}, files={"file": ("rec.m4a", b"123", "audio/mp4")})
+    with SessionLocal() as s:
+        web_note = s.query(Note).filter_by(card_id=card.id, source="web").one()
+        assert web_note.transcript and web_note.summary
+    assert "Сводка" in client.get("/export.csv").text
+
+
+def test_migration_adds_columns(tmp_path):
+    """База, созданная первой версией (без новых колонок), дополняется при старте."""
+    from sqlalchemy import create_engine, inspect, text
+
+    from app.db import migrate
+
+    eng = create_engine(f"sqlite:///{tmp_path}/old.db")
+    with eng.begin() as c:
+        c.execute(text("CREATE TABLE cards (id INTEGER PRIMARY KEY, full_name VARCHAR(300))"))
+        c.execute(text("CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT)"))
+        c.execute(text("INSERT INTO notes (id, text) VALUES (1, 'старая')"))
+    migrate(eng)
+    migrate(eng)  # повторный запуск ничего не ломает
+    cols = {c["name"] for c in inspect(eng).get_columns("notes")}
+    assert {"transcript", "summary", "ai_status", "ai_error"} <= cols
+    assert {"summary", "summary_at"} <= {c["name"] for c in inspect(eng).get_columns("cards")}
+    with eng.begin() as c:
+        assert c.execute(text("SELECT ai_status FROM notes WHERE id=1")).scalar() == "none"

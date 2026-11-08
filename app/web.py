@@ -163,11 +163,43 @@ async def add_note(request: Request, card_id: int, text: str = Form(""), file: U
         if card is None:
             raise HTTPException(404)
         note = Note(card_id=card_id, text=text.strip() or None, author=user, source="web")
+        att = None
         if data:
-            note.attachment_id = crm.add_attachment(s, card_id, "file", data, file.filename, file.content_type).id
+            kind = "voice" if (file.content_type or "").startswith("audio/") else "file"
+            att = crm.add_attachment(s, card_id, kind, data, file.filename, file.content_type)
+            note.attachment_id = att.id
+        ai_needed = crm.needs_ai(note, att)
+        if ai_needed:
+            note.ai_status = "processing"
         s.add(note)
         card.updated_at = now()
         s.commit()
+        note_id = note.id
+    if ai_needed:
+        crm.start_note_ai(note_id)
+    else:
+        crm.schedule_card_summary(card_id)
+    return RedirectResponse(f"/c/{card_id}", 303)
+
+
+@router.post("/n/{note_id}/ai")
+def rerun_note_ai(request: Request, note_id: int):
+    user_of(request)
+    with crm.LOCK, SessionLocal() as s:
+        note = s.get(Note, note_id)
+        if note is None or note.card_id is None:
+            raise HTTPException(404)
+        note.ai_status = "processing"
+        s.commit()
+        card_id = note.card_id
+    crm.start_note_ai(note_id)
+    return RedirectResponse(f"/c/{card_id}", 303)
+
+
+@router.post("/c/{card_id}/summary")
+def rebuild_summary(request: Request, card_id: int):
+    user_of(request)
+    crm.schedule_card_summary(card_id)
     return RedirectResponse(f"/c/{card_id}", 303)
 
 
@@ -215,16 +247,17 @@ def export(request: Request):
         cards = list(s.scalars(select(Card).order_by(Card.id)))
         notes: dict[int, list[str]] = {}
         for n in s.scalars(select(Note).where(Note.card_id.is_not(None)).order_by(Note.created_at)):
-            if n.text:
-                notes.setdefault(n.card_id, []).append(f"[{_dt(n.created_at, '%d.%m %H:%M')} {n.author}] {n.text}")
+            body = n.summary or n.text or n.transcript
+            if body:
+                notes.setdefault(n.card_id, []).append(f"[{_dt(n.created_at, '%d.%m %H:%M')} {n.author}] {body}")
     buf = io.StringIO()
     buf.write("﻿")  # чтобы Excel открыл UTF-8 с кириллицей
     w = csv.writer(buf, delimiter=";")
     w.writerow(["ID", "Имя", "Должность", "Компания", "Телефоны", "Email", "Сайт", "Адрес", "Страна",
-                "Соцсети", "Статус", "Добавил", "Дата", "Заметки"])
+                "Соцсети", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
     for c in cards:
         w.writerow([c.code, c.full_name, c.position, c.company, "\n".join(c.phones or []), "\n".join(c.emails or []),
                     c.website, c.address, c.country, "\n".join(c.socials or []), STATUSES.get(c.status, c.status),
-                    c.created_by, _dt(c.created_at, "%d.%m.%Y"), "\n".join(notes.get(c.id, []))])
+                    c.created_by, _dt(c.created_at, "%d.%m.%Y"), c.summary, "\n".join(notes.get(c.id, []))])
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": f'attachment; filename="partners-{now():%Y%m%d}.csv"'})

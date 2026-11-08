@@ -9,6 +9,18 @@
 {% if card.unreadable %}<p class="note-box warn">⚠️ Проверьте поля: {% for f in card.unreadable %}{{ FIELD_LABELS.get(f, f) }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
 {% for other, why in similar %}<p class="note-box">🔁 Похоже на <a href="/c/{{ other.id }}">{{ other.code }} {{ other.title }}</a> — {{ why }}</p>{% endfor %}
 
+{% if card.summary or notes %}
+<div class="panel summary">
+  <div class="summary-head">
+    <b>🧠 Сводка</b>
+    <form method="post" action="/c/{{ card.id }}/summary"><button class="link">Обновить</button></form>
+  </div>
+  {% if card.summary %}<div class="text">{{ card.summary }}</div>
+  <div class="muted small">обновлено {{ card.summary_at|dt('%d.%m %H:%M') }}</div>
+  {% else %}<div class="muted">Сводка собирается по заметкам — обновите страницу через несколько секунд.</div>{% endif %}
+</div>
+{% endif %}
+
 <div class="grid">
 <section>
   {% if photos %}
@@ -43,7 +55,7 @@
 
 <section>
   <form method="post" action="/c/{{ card.id }}/note" enctype="multipart/form-data" class="panel">
-    <label>Заметка<textarea name="text" rows="3" placeholder="О чём договорились, следующий шаг…"></textarea></label>
+    <label>Заметка <span class="muted">(или аудиофайл — расшифруется)</span><textarea name="text" rows="3" placeholder="О чём договорились, следующий шаг…"></textarea></label>
     <input type="file" name="file">
     <button class="btn">Добавить</button>
   </form>
@@ -51,9 +63,17 @@
   {% for n in notes %}
     <div class="note">
       <div class="muted small">{{ n.author or '—' }} · {{ n.created_at|dt('%d.%m.%Y %H:%M') }} · {{ 'Telegram' if n.source == 'bot' else 'CRM' }}{% if n.edited_at %} · изменено{% endif %}</div>
-      {% if n.text %}<div class="text">{{ n.text }}</div>{% endif %}
+      {% if n.summary %}
+        <div class="text sum">{{ n.summary }}</div>
+        {% if n.text %}<details class="small"><summary>Полный текст</summary><div class="text">{{ n.text }}</div></details>{% endif %}
+      {% elif n.text %}<div class="text">{{ n.text }}</div>{% endif %}
+      {% if n.transcript %}<details class="small" {% if not n.summary %}open{% endif %}><summary>Расшифровка</summary><div class="text">{{ n.transcript }}</div></details>{% endif %}
+      {% if n.ai_status == 'processing' %}<div class="muted small">⏳ Расшифровываю / сокращаю…</div>{% endif %}
+      {% if n.ai_status == 'error' %}<div class="note-box warn small">⚠️ Не удалось обработать: {{ n.ai_error }}
+        <form method="post" action="/n/{{ n.id }}/ai" style="display:inline"><button class="link">Повторить</button></form></div>{% endif %}
       {% if n.attachment_id and att_by_id.get(n.attachment_id) %}{% set a = att_by_id[n.attachment_id] %}
-        {% if a.kind == 'voice' %}<audio controls preload="none" src="/f/{{ a.id }}"></audio>
+        {% if a.kind == 'voice' or (a.mime and a.mime.startswith('audio/')) %}<audio controls preload="none" src="/f/{{ a.id }}"></audio>
+        {% elif a.mime and a.mime.startswith('video/') %}<video controls preload="none" src="/f/{{ a.id }}"></video>
         {% elif a.mime and a.mime.startswith('image/') %}<a href="/f/{{ a.id }}" target="_blank"><img class="att" src="/f/{{ a.id }}" alt=""></a>
         {% else %}<a href="/f/{{ a.id }}" target="_blank">📎 {{ a.filename }}</a>{% endif %}
       {% endif %}

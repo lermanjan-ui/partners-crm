@@ -32,7 +32,8 @@ IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 
 
 def handle_update(s, tg: Telegram, upd: dict) -> list[tuple]:
-    """Возвращает задания на распознавание (запускаются после commit)."""
+    """Возвращает фоновые задания (запускаются после commit):
+    ("ocr", card_id, attachment_ids, chat_id, reply_to, delay) | ("note", note_id) | ("card", card_id)."""
     if s.get(ProcessedUpdate, upd["update_id"]):
         return []  # повторная доставка — игнорируем
     s.add(ProcessedUpdate(update_id=upd["update_id"]))
@@ -40,9 +41,9 @@ def handle_update(s, tg: Telegram, upd: dict) -> list[tuple]:
     if "message" in upd:
         jobs = on_message(s, tg, upd["message"])
     elif "edited_message" in upd:
-        on_edit(s, tg, upd["edited_message"])
+        jobs = on_edit(s, tg, upd["edited_message"])
     elif "callback_query" in upd:
-        on_callback(s, tg, upd["callback_query"])
+        jobs = on_callback(s, tg, upd["callback_query"])
     return jobs
 
 
@@ -115,13 +116,12 @@ def on_message(s, tg: Telegram, msg: dict) -> list[tuple]:
         data = tg.download(obj["file_id"])
         if kind == "image":
             return on_card_image(s, tg, msg, who, card, data, mime, name, text)
-        return [] if add_note(s, tg, msg, who, card, text, (data, kind, mime, name)) else []
+        return add_note(s, tg, msg, who, card, text, (data, kind, mime, name))
 
     if not text:
         tg.send(chat_id, "Этот тип сообщения не поддерживается. Отправьте фото визитки, текст, голосовое или файл.", reply_to=mid)
         return []
-    add_note(s, tg, msg, who, card, text, None)
-    return []
+    return add_note(s, tg, msg, who, card, text, None)
 
 
 def on_card_image(s, tg, msg, who, card, data, mime, name, caption) -> list[tuple]:
@@ -148,7 +148,7 @@ def on_card_image(s, tg, msg, who, card, data, mime, name, caption) -> list[tupl
             s.add(MediaGroup(id=group, card_id=card.id))
         sent = tg.send(chat_id, f"🔄 Добавлено к <b>{card.code}</b> {esc(card.title)}, распознаю…", reply_to=mid)
         crm.link(s, chat_id, sent["message_id"], "bot", card_id=card.id)
-        return [(card.id, None if group else [att.id], chat_id, mid, 4 if group else 0)]
+        return [("ocr", card.id, None if group else [att.id], chat_id, mid, 4 if group else 0)]
 
     card = Card(source="bot", created_by=who, tg_chat_id=chat_id, ocr_status="processing")
     s.add(card)
@@ -163,30 +163,37 @@ def on_card_image(s, tg, msg, who, card, data, mime, name, caption) -> list[tupl
     sent = tg.send(chat_id, f"📥 Визитка принята — <b>{card.code}</b>. Распознаю…{hint}", reply_to=mid)
     crm.link(s, chat_id, sent["message_id"], "bot", card_id=card.id)
     # Для альбома ждём остальные фото (оборот) и распознаём все стороны разом.
-    return [(card.id, None if group else [att.id], chat_id, mid, 4 if group else 0)]
+    return [("ocr", card.id, None if group else [att.id], chat_id, mid, 4 if group else 0)]
 
 
-def add_note(s, tg, msg, who, card, text, file) -> Note:
+def add_note(s, tg, msg, who, card, text, file) -> list[tuple]:
     chat_id, mid = msg["chat"]["id"], msg["message_id"]
     if card is None:
         cid = crm.parse_card_id(text)
         card = s.get(Card, cid) if cid else None
     note = Note(card_id=card.id if card else None, text=text or None, author=who,
                 tg_chat_id=chat_id, tg_message_id=mid)
+    att = None
     if file:
         data, kind, mime, name = file
         att = crm.add_attachment(s, note.card_id, kind, data, name, mime)
         note.attachment_id = att.id
+    ai_needed = crm.needs_ai(note, att)
+    if ai_needed:
+        note.ai_status = "processing"
     s.add(note)
     s.flush()
     crm.link(s, chat_id, mid, "note", card_id=note.card_id, note_id=note.id)
     if card:
         card.updated_at = now()
-        sent = tg.send(chat_id, f"📝 Добавлено к <b>{card.code}</b> {esc(card.title)}", reply_to=mid)
+        extra = " 🎙 Расшифровываю…" if crm.is_audio(att) else ""
+        sent = tg.send(chat_id, f"📝 Добавлено к <b>{card.code}</b> {esc(card.title)}.{extra}", reply_to=mid)
         crm.link(s, chat_id, sent["message_id"], "bot", card_id=card.id)
     else:
         show_choices(s, tg, chat_id, note.id, reply_to=mid)
-    return note
+    if ai_needed:
+        return [("note", note.id)]
+    return [("card", card.id)] if card else []
 
 
 def show_choices(s, tg, chat_id, note_id, reply_to=None, query=None, edit_message_id=None):
@@ -247,9 +254,9 @@ def on_command(s, tg, chat_id, mid, text, who) -> list[tuple]:
     return []
 
 
-def on_edit(s, tg, msg: dict) -> None:
+def on_edit(s, tg, msg: dict) -> list[tuple]:
     if not allowed(msg.get("from") or {}):
-        return
+        return []
     chat_id, mid = msg["chat"]["id"], msg["message_id"]
     text = (msg.get("text") or msg.get("caption") or "").strip()
     note = s.scalars(select(Note).where(Note.tg_chat_id == chat_id, Note.tg_message_id == mid)).first()
@@ -259,30 +266,39 @@ def on_edit(s, tg, msg: dict) -> None:
             if lnk.card_id:
                 s.add(Note(card_id=lnk.card_id, text=text, author=author_name(msg["from"]),
                            tg_chat_id=chat_id, tg_message_id=mid))
-        return
-    if note.text != text:
-        note.prev_text, note.text, note.edited_at = note.text, text, now()
+                return [("card", lnk.card_id)]
+        return []
+    if note.text == text:
+        return []
+    note.prev_text, note.text, note.edited_at = note.text, text, now()
+    att = s.get(Attachment, note.attachment_id) if note.attachment_id else None
+    if len(text) >= settings.summary_min_chars and not crm.is_audio(att):
+        note.ai_status = "processing"
+        return [("note", note.id)]
+    if not crm.is_audio(att):
+        note.summary = None  # стала короткой — выжимка не нужна
+    return [("card", note.card_id)] if note.card_id else []
 
 
 # ---------- кнопки ----------
 
-def on_callback(s, tg, cq: dict) -> None:
+def on_callback(s, tg, cq: dict) -> list[tuple]:
     user = cq.get("from") or {}
     data = cq.get("data") or ""
     msg = cq.get("message") or {}
     chat_id, mid = msg.get("chat", {}).get("id"), msg.get("message_id")
     if not allowed(user) or chat_id is None:
         tg.answer_callback(cq["id"], "Нет доступа")
-        return
+        return []
     kind, *args = data.split(":")
     if kind == "a":  # привязать заметку к карточке
         note, card = s.get(Note, int(args[0])), s.get(Card, int(args[1]))
         if note is None or card is None:
             tg.answer_callback(cq["id"], "Не найдено")
-            return
+            return []
         if note.card_id and note.card_id != card.id:
             tg.answer_callback(cq["id"], "Уже привязано к другому контакту")
-            return
+            return []
         note.card_id = card.id
         if note.attachment_id:
             s.execute(update(Attachment).where(Attachment.id == note.attachment_id).values(card_id=card.id))
@@ -291,6 +307,8 @@ def on_callback(s, tg, cq: dict) -> None:
         tg.edit(chat_id, mid, f"📝 Добавлено к <b>{card.code}</b> {esc(card.title)}")
         crm.link(s, chat_id, mid, "bot", card_id=card.id)
         tg.answer_callback(cq["id"], "Сохранено")
+        # голосовое ещё расшифровывается — сводку обновит сама расшифровка
+        return [] if note.ai_status == "processing" else [("card", card.id)]
     elif kind == "f":  # попросить поисковый запрос
         tg.answer_callback(cq["id"])
         sent = tg.send(chat_id, "🔍 Напишите имя, компанию, телефон или #ID:", force_reply=True,
@@ -313,3 +331,4 @@ def on_callback(s, tg, cq: dict) -> None:
             crm.link(s, chat_id, sent["message_id"], "bot", card_id=card.id)
     else:
         tg.answer_callback(cq["id"])
+    return []

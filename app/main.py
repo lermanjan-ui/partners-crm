@@ -11,7 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import bot, crm
 from .config import settings
-from .db import Attachment, Card, SessionLocal, init_db
+from .db import Attachment, Card, Note, SessionLocal, init_db
 from .tg import Telegram
 from .web import LoginRequired, router
 
@@ -56,6 +56,9 @@ def startup() -> None:
             else:
                 card.ocr_status = "none"
         s.commit()
+        # Голосовые/заметки, обработку которых прервал перезапуск.
+        for note_id in s.scalars(select(Note.id).where(Note.ai_status == "processing")):
+            crm.start_note_ai(note_id, tg)
 
 
 @app.get("/healthz")
@@ -89,5 +92,12 @@ def process(upd: dict) -> None:
                 except Exception:  # noqa: BLE001
                     pass
             return
-    for card_id, att_ids, chat_id, reply_to, delay in jobs:
-        crm.start_ocr(card_id, att_ids, tg, chat_id, reply_to, delay)
+    for job in jobs:
+        kind, *args = job
+        if kind == "ocr":
+            card_id, att_ids, chat_id, reply_to, delay = args
+            crm.start_ocr(card_id, att_ids, tg, chat_id, reply_to, delay)
+        elif kind == "note":
+            crm.start_note_ai(args[0], tg)
+        elif kind == "card":
+            crm.schedule_card_summary(args[0])

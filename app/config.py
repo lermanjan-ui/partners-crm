@@ -30,6 +30,11 @@ class Settings:
         self.webhook_secret = hashlib.sha256(("tg:" + self.secret_key).encode()).hexdigest()
         self.max_file_mb = 20
         self.timezone = os.getenv("DISPLAY_TZ", "Asia/Tashkent")
+        # Расшифровка голосовых: whisper-1 и gpt-4o-transcribe OpenAI отключает 26.02.2027
+        self.transcribe_model = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe")
+        self.transcribe_fallback = os.getenv("OPENAI_TRANSCRIBE_FALLBACK", "whisper-1")
+        # Текстовые заметки длиннее этого получают короткую выжимку
+        self.summary_min_chars = int(os.getenv("SUMMARY_MIN_CHARS", "300"))
 
 
 settings = Settings()

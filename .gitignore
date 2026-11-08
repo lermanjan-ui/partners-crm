@@ -4,3 +4,4 @@ __pycache__/
 .env
 crm.db
 .pytest_cache/
+.backups/
