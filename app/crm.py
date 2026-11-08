@@ -427,3 +427,134 @@ def build_card_summary(card_id: int) -> None:
         if card is not None:
             card.summary, card.summary_at = summary, now()
             s.commit()
+
+
+# ---------- /list: список участников группы → много контактов ----------
+
+LIST_SOURCES = {"whatsapp": ("WhatsApp", "wa_base"), "telegram": ("Telegram", None),
+                "ws_app": ("приложения Web Summit", "ws_app"), "other": ("", None)}
+
+
+def _clean_name(name: str | None) -> str:
+    return re.sub(r"^[~\s]+", "", name or "").strip()
+
+
+def _find_existing(cards: list[Card], phone_digits: str, name: str, username: str | None) -> Card | None:
+    if len(phone_digits) >= 7:
+        for c in cards:
+            if phone_digits in {ocr.phone_key(p) for p in c.phones or []}:
+                return c
+    if username:
+        for c in cards:
+            if (c.full_name or "").strip().lower() == name.lower() and \
+                    any(username.lower() in (v or "").lower() for v in c.socials or []):
+                return c
+    return None
+
+
+def run_list_import(att_id: int, chat_id: int, reply_to: int | None, author: str, tg: Telegram | None) -> None:
+    with SessionLocal() as s:
+        att = s.get(Attachment, att_id)
+        files = [(att.data, att.mime)] if att else []
+    if not files:
+        return
+    try:
+        result = ocr.extract_people(files)
+    except Exception as e:  # noqa: BLE001
+        log.exception("list import failed")
+        if tg:
+            tg.send(chat_id, f"⚠️ Не удалось разобрать список: {esc(str(e)[:300])}\nСкриншот сохранён — пришлите его ещё раз.",
+                    reply_to=reply_to)
+        return
+    where, channel = LIST_SOURCES.get(result.get("source"), LIST_SOURCES["other"])
+    group = (result.get("group_name") or "").strip()
+    origin = "Из " + (f"группы {where} «{group}»" if group else (f"списка {where}" if where else "списка участников"))
+    batch = f"L{att_id}"
+    created, updated, cut, seen = [], [], 0, set()
+    with LOCK, SessionLocal() as s:
+        cards = list(s.scalars(select(Card)))
+        for p in result.get("people") or []:
+            name = _clean_name(p.get("name"))
+            phone = ocr.norm_phone(p.get("phone") or "") if p.get("phone") else ""
+            username = (p.get("username") or "").strip() or None
+            if username and not username.startswith("@"):
+                username = "@" + username
+            if p.get("cut_off"):
+                cut += 1
+                continue
+            if not name or not (phone or username or p.get("subtitle")):
+                continue
+            key = ocr.phone_key(phone) or f"{name.lower()}|{username or ''}"
+            if key in seen:  # одна строка дважды (обзор + фрагмент скриншота)
+                continue
+            seen.add(key)
+            socials = []
+            if result.get("source") == "whatsapp":
+                if phone.startswith("+"):
+                    socials.append(f"WhatsApp: {phone}")
+                if username:
+                    socials.append(f"WhatsApp: {username}")
+            elif username:
+                socials.append(f"{'Telegram' if result.get('source') == 'telegram' else 'Ник'}: {username}")
+            about = origin + (f"\nПодпись: {p['subtitle'].strip()}" if p.get("subtitle") else "")
+            data = {"full_name": name, "position": p.get("position"), "company": p.get("company"),
+                    "website": p.get("website"), "about": about, "phones": [phone] if phone else [],
+                    "emails": [], "socials": socials, "uncertain_fields": []}
+            tags = {"temp": "cold", "channel": channel}
+            card = _find_existing(cards, ocr.phone_key(phone), name, username)
+            if card is not None:  # уже есть — дополняем пустое, выбранные теги не трогаем
+                ocr.apply_result(card, data)
+                card.set_tags(tags, by_user=False)
+                updated.append(card)
+                continue
+            card = Card(source="list", created_by=author, tg_chat_id=chat_id, batch=batch, ocr_status="none")
+            ocr.apply_result(card, data)
+            card.set_tags(tags, by_user=False)
+            s.add(card)
+            s.flush()
+            cards.append(card)
+            created.append(card)
+        s.commit()
+        text = list_report(created, updated, cut, origin)
+        if tg:
+            buttons = [[("↩️ Отменить импорт", f"lu:{batch}")]] if created else []
+            if created and settings.public_url.startswith("https://"):
+                buttons.append([("Открыть в CRM", f"{settings.public_url}/?batch={batch}")])
+            sent = tg.send(chat_id, text, reply_to=reply_to, buttons=buttons or None)
+            if len(created) == 1:
+                link(s, chat_id, sent["message_id"], "bot", card_id=created[0].id)
+            s.commit()
+
+
+def list_report(created, updated, cut, origin) -> str:
+    def label(c):
+        extra = c.company or c.position
+        return f"{c.code} {esc(c.title)}" + (f" — {esc(extra)}" if extra else "")
+
+    lines = [f"📋 <b>Добавлено: {len(created)}</b> (❄️ холодные) · {esc(origin)}"]
+    lines += [label(c) for c in created[:40]]
+    if len(created) > 40:
+        lines.append(f"… и ещё {len(created) - 40}")
+    if updated:
+        lines.append(f"\n🔁 Уже были в базе, дополнены: {len(updated)} — " + ", ".join(label(c) for c in updated[:15]))
+    if cut:
+        lines.append(f"✂️ Пропущено обрезанных строк: {cut} — они будут целиком на следующем скриншоте.")
+    if not created and not updated:
+        lines.append("Людей на скриншоте не нашлось.")
+    return "\n".join(lines)
+
+
+def undo_batch(s, batch: str) -> tuple[int, int]:
+    """Удаляет контакты пачки, к которым ещё ничего не добавляли. Возвращает (удалено, оставлено)."""
+    removed = kept = 0
+    for card in s.scalars(select(Card).where(Card.batch == batch, Card.source == "list")):
+        if s.scalar(select(Note.id).where(Note.card_id == card.id).limit(1)) is not None:
+            kept += 1
+            continue
+        s.delete(card)
+        removed += 1
+    return removed, kept
+
+
+def start_list_import(att_id, chat_id, reply_to, author, tg=None) -> None:
+    spawn(run_list_import, att_id, chat_id, reply_to, author, tg)

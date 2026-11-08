@@ -62,7 +62,8 @@ class Card(Base):
     kind: Mapped[str | None] = mapped_column(String(20))     # partner | investor
     temp: Mapped[str | None] = mapped_column(String(20))     # cold | warm | hot
     channel: Mapped[str | None] = mapped_column(String(20))  # booth | offline | ws_app | wa_base
-    source: Mapped[str] = mapped_column(String(20), default="bot")  # bot | web | form (на будущее)
+    source: Mapped[str] = mapped_column(String(20), default="bot")  # bot | web | list | form (на будущее)
+    batch: Mapped[str | None] = mapped_column(String(40), index=True)  # пачка импорта из /list (для отмены)
     ocr_status: Mapped[str] = mapped_column(String(20), default="none")  # none | processing | done | error
     ocr_error: Mapped[str | None] = mapped_column(Text)
     summary: Mapped[str | None] = mapped_column(Text)  # ИИ-сводка по контакту (по визитке и всем заметкам)
@@ -107,7 +108,7 @@ class Card(Base):
         """Номера, помеченные как WhatsApp (строки «WhatsApp: +…» в соцсетях), — только с кодом страны."""
         out = []
         for v in self.socials or []:
-            if re.search(r"whats\s*app|wa\.me", v, re.I):
+            if re.search(r"whats\s*app|wa\.me", v, re.I) and "@" not in v:  # «WhatsApp: @ник» — без номера
                 digits = re.sub(r"\D", "", v)
                 if len(digits) >= 8 and ("+" in v or "wa.me" in v.lower() or len(digits) >= 11) and digits not in out:
                     out.append(digits)
@@ -181,6 +182,14 @@ class ProcessedUpdate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class ChatMode(Base):
+    """Режим чата: list — фото разбираются как списки участников, а не как визитки."""
+    __tablename__ = "chat_modes"
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    mode: Mapped[str] = mapped_column(String(20))
+    until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class MediaGroup(Base):
     """Альбом из нескольких фото = одна визитка (лицо + оборот)."""
     __tablename__ = "media_groups"
@@ -206,7 +215,7 @@ def init_db(url: str) -> None:
 # Новые колонки для уже существующей базы (create_all добавляет только новые таблицы).
 NEW_COLUMNS = {
     "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP", "about": "TEXT",
-              "kind": "VARCHAR(20)", "temp": "VARCHAR(20)", "channel": "VARCHAR(20)"},
+              "kind": "VARCHAR(20)", "temp": "VARCHAR(20)", "channel": "VARCHAR(20)", "batch": "VARCHAR(40)"},
     "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT",
               "tags": "JSON"},
 }

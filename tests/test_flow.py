@@ -537,3 +537,87 @@ def test_tags(env):
 def ask_note_id(mid):
     with SessionLocal() as s:
         return s.query(Note).filter_by(tg_message_id=mid).one().id
+
+
+LIST_RESULT = {
+    "source": "whatsapp", "group_name": "Founders & CEOs @ Web Summit",
+    "people": [
+        {"name": "~Marysol", "subtitle": None, "position": None, "company": None, "website": None,
+         "phone": "+353 86 034 8480", "username": None, "cut_off": False},
+        {"name": "~Mert", "subtitle": "Paraltera Founder & CEO", "position": "Founder & CEO", "company": "Paraltera",
+         "website": None, "phone": None, "username": "@mozguler", "cut_off": False},
+        {"name": "~Med Said Meliji", "subtitle": "www.invisionpixels.net", "position": None, "company": None,
+         "website": "www.invisionpixels.net", "phone": None, "username": "s.meliji", "cut_off": False},
+        {"name": "~Mert", "subtitle": "Paraltera Founder & CEO", "position": "Founder & CEO", "company": "Paraltera",
+         "website": None, "phone": None, "username": "@mozguler", "cut_off": False},  # дубль из фрагмента
+        {"name": "~Rob Parker", "subtitle": None, "position": None, "company": None, "website": None,
+         "phone": "+1 (250) 650-8787", "username": None, "cut_off": False},
+        {"name": "~Amar", "subtitle": "Making Manufacturing Easy", "position": None, "company": None, "website": None,
+         "phone": None, "username": None, "cut_off": True},
+    ],
+}
+
+
+def test_list_import(env):
+    client, tg = env
+    ocr.extract_people = lambda files: LIST_RESULT
+    # Rob Parker уже есть в базе с горячим тегом
+    with SessionLocal() as s:
+        rob = Card(full_name="Rob Parker", phones=["+12506508787"], temp="hot", edited_fields=["temp"], source="web")
+        s.add(rob)
+        s.commit()
+        rob_id = rob.id
+    post(client, **msg(800, text="/list"))
+    assert "Режим списка" in tg.sent[-1]["text"]
+    post(client, **msg(801, document={"file_id": "lst", "mime_type": "image/png", "file_name": "l.png", "file_size": 10}))
+    report = tg.sent[-1]
+    assert "Добавлено: 3" in report["text"] and "Founders &amp; CEOs @ Web Summit" in report["text"]
+    assert "Уже были в базе, дополнены: 1" in report["text"] and "обрезанных строк: 1" in report["text"]
+    with SessionLocal() as s:
+        new = s.query(Card).filter_by(source="list").order_by(Card.id).all()
+        assert [c.full_name for c in new] == ["Marysol", "Mert", "Med Said Meliji"]
+        assert all(c.temp == "cold" and c.channel == "wa_base" for c in new)
+        marysol, mert, med = new
+        assert marysol.whatsapp_numbers == ["353860348480"] and marysol.phones == ["+353860348480"]
+        assert mert.company == "Paraltera" and mert.socials == ["WhatsApp: @mozguler"] and mert.whatsapp_numbers == []
+        assert med.website == "www.invisionpixels.net" and "WhatsApp: @s.meliji" in med.socials
+        assert "Founders & CEOs" in mert.about and "Подпись: Paraltera" in mert.about
+        rob = s.get(Card, rob_id)
+        assert rob.temp == "hot" and rob.channel == "wa_base" and "WhatsApp: +12506508787" in rob.socials
+        batch = marysol.batch
+    # второй скрин с перекрытием — повторов нет
+    post(client, **msg(802, document={"file_id": "lst2", "mime_type": "image/png", "file_name": "l2.png", "file_size": 10}))
+    assert "Добавлено: 0" in tg.sent[-1]["text"] and "дополнены: 4" in tg.sent[-1]["text"]
+    # сайт: фильтр по пачке
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get(f"/?batch={batch}").text
+    assert "Marysol" in page and "Rob Parker" not in page
+    # отмена импорта: контакт с заметкой остаётся
+    with SessionLocal() as s:
+        s.add(Note(card_id=mert.id, text="написал ему"))
+        s.commit()
+    btn = next(b for row in report["buttons"] for b in row if b[1].startswith("lu:"))
+    post(client, "callback_query", id="u", data=btn[1], **{"from": {"id": 1}, "message": {"message_id": report["id"], "chat": {"id": 1}}})
+    assert "удалено контактов — 2" in tg.edits[-1]["text"] and "Оставлено 1" in tg.edits[-1]["text"]
+    with SessionLocal() as s:
+        assert [c.full_name for c in s.query(Card).filter_by(source="list")] == ["Mert"]
+        assert s.get(Card, rob_id) is not None
+    # выключение режима — фото снова визитка
+    post(client, **msg(803, text="/done"))
+    n_before = len(tg.sent)
+    post(client, **msg(804, photo=[{"file_id": "card", "file_size": 10}]))
+    assert "Визитка принята" in tg.sent[n_before]["text"]
+
+
+def test_list_mode_expires(env):
+    client, tg = env
+    from datetime import timedelta
+
+    from app.db import ChatMode, now
+    post(client, **msg(810, text="/list"))
+    with SessionLocal() as s:
+        s.get(ChatMode, 1).until = now() - timedelta(minutes=1)
+        s.commit()
+    n_before = len(tg.sent)
+    post(client, **msg(811, photo=[{"file_id": "card2", "file_size": 10}]))
+    assert "Визитка принята" in tg.sent[n_before]["text"]

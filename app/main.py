@@ -111,3 +111,5 @@ def process(upd: dict) -> None:
             crm.schedule_card_summary(args[0])
         elif kind == "contact":
             crm.start_fill_card(args[0], args[1], tg)
+        elif kind == "list":
+            crm.start_list_import(*args, tg)

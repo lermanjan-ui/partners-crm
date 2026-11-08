@@ -87,5 +87,7 @@ class Telegram:
             {"command": "find", "description": "Найти контакт: /find имя, компания, телефон"},
             {"command": "last", "description": "Последние визитки"},
             {"command": "new", "description": "Создать контакт без визитки: /new Имя"},
+            {"command": "list", "description": "Скриншоты списка участников группы → много контактов"},
+            {"command": "done", "description": "Выключить режим списка"},
             {"command": "help", "description": "Как пользоваться"},
         ])

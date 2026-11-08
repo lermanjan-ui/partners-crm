@@ -6,12 +6,13 @@
 Иначе бот спрашивает «К кому это?» и ничего не привязывает сам.
 """
 import logging
+from datetime import timedelta, timezone
 
 from sqlalchemy import delete, select, update
 
 from . import crm
 from .config import settings
-from .db import TAG_GROUPS, Attachment, Card, MediaGroup, Note, ProcessedUpdate, TgLink, now
+from .db import TAG_GROUPS, Attachment, Card, ChatMode, MediaGroup, Note, ProcessedUpdate, TgLink, now
 from .tg import Telegram, esc
 
 log = logging.getLogger("bot")
@@ -28,7 +29,10 @@ HELP = """<b>Как пользоваться</b>
 /last — последние визитки
 🗣 <b>Без визитки</b> — надиктуйте голосовое: имя, компания, телефон, о чём говорили. На вопрос «К кому это?» нажмите «➕ Новый контакт» — бот заполнит карточку сам. Подойдёт и фото бейджа.
 
-/new Имя или компания — контакт без визитки"""
+📋 <b>Список участников</b> (скрин группы WhatsApp, Telegram, приложения) — сначала /list, потом скриншоты: каждый человек станет отдельным контактом.
+
+/new Имя или компания — контакт без визитки
+/list — режим списка участников, /done — выключить"""
 
 IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 
@@ -36,7 +40,7 @@ IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 def handle_update(s, tg: Telegram, upd: dict) -> list[tuple]:
     """Возвращает фоновые задания (запускаются после commit):
     ("ocr", card_id, attachment_ids, chat_id, reply_to, delay) | ("note", note_id) | ("card", card_id)
-    | ("contact", card_id, note_id)."""
+    | ("contact", card_id, note_id) | ("list", attachment_id, chat_id, reply_to, author)."""
     if s.get(ProcessedUpdate, upd["update_id"]):
         return []  # повторная доставка — игнорируем
     s.add(ProcessedUpdate(update_id=upd["update_id"]))
@@ -117,6 +121,8 @@ def on_message(s, tg: Telegram, msg: dict) -> list[tuple]:
             tg.send(chat_id, f"Файл больше {settings.max_file_mb} МБ — Telegram не даёт боту его скачать. Сожмите или отправьте фото.", reply_to=mid)
             return []
         data = tg.download(obj["file_id"])
+        if kind == "image" and card is None and list_mode(s, msg["chat"]["id"]):
+            return on_list_image(s, tg, msg, who, data, mime, name)
         if kind == "image":
             return on_card_image(s, tg, msg, who, card, data, mime, name, text)
         return add_note(s, tg, msg, who, card, text, (data, kind, mime, name))
@@ -167,6 +173,28 @@ def on_card_image(s, tg, msg, who, card, data, mime, name, caption) -> list[tupl
     crm.link(s, chat_id, sent["message_id"], "bot", card_id=card.id)
     # Для альбома ждём остальные фото (оборот) и распознаём все стороны разом.
     return [("ocr", card.id, None if group else [att.id], chat_id, mid, 4 if group else 0)]
+
+
+LIST_MINUTES = 15
+
+
+def list_mode(s, chat_id: int) -> bool:
+    mode = s.get(ChatMode, chat_id)
+    if mode is None or mode.mode != "list":
+        return False
+    until = mode.until if mode.until.tzinfo else mode.until.replace(tzinfo=timezone.utc)
+    if until < now():
+        s.delete(mode)
+        return False
+    return True
+
+
+def on_list_image(s, tg, msg, who, data, mime, name) -> list[tuple]:
+    chat_id, mid = msg["chat"]["id"], msg["message_id"]
+    s.get(ChatMode, chat_id).until = now() + timedelta(minutes=LIST_MINUTES)  # продлеваем режим
+    att = crm.add_attachment(s, None, "list", data, name, mime)
+    tg.send(chat_id, "📋 Разбираю список участников…", reply_to=mid)
+    return [("list", att.id, chat_id, mid, who)]
 
 
 def add_note(s, tg, msg, who, card, text, file) -> list[tuple]:
@@ -238,6 +266,23 @@ def on_command(s, tg, chat_id, mid, text, who) -> list[tuple]:
         else:
             tg.send(chat_id, f"Найдено: {len(cards)}", reply_to=mid,
                     buttons=[[(crm.short_label(c), f"c:{c.id}")] for c in cards])
+    elif cmd == "/list":
+        mode = s.get(ChatMode, chat_id)
+        until = now() + timedelta(minutes=LIST_MINUTES)
+        if mode is None:
+            s.add(ChatMode(chat_id=chat_id, mode="list", until=until))
+        else:
+            mode.mode, mode.until = "list", until
+        tg.send(chat_id, "📋 <b>Режим списка включён.</b>\nПришлите скриншоты списка участников группы — можно несколько "
+                         "подряд или альбомом. Каждый человек станет отдельным контактом (❄️ холодный).\n"
+                         f"Режим выключится кнопкой ниже, командой /done или сам через {LIST_MINUTES} минут — "
+                         "после этого фото снова считаются визитками.",
+                buttons=[[("✅ Готово", "ld")]])
+    elif cmd == "/done":
+        mode = s.get(ChatMode, chat_id)
+        if mode is not None:
+            s.delete(mode)
+        tg.send(chat_id, "✅ Режим списка выключен. Фото снова считаются визитками.")
     elif cmd == "/last":
         cards = crm.recent(s, limit=10)
         if not cards:
@@ -350,6 +395,20 @@ def on_callback(s, tg, cq: dict) -> list[tuple]:
         except Exception:  # noqa: BLE001 — старое сообщение могло быть удалено; тег уже сохранён
             log.exception("cannot update buttons")
         tg.answer_callback(cq["id"], TAG_GROUPS[group][1][value] if new else "Тег снят")
+        return []
+    elif kind == "ld":  # выключить режим списка
+        mode = s.get(ChatMode, chat_id)
+        if mode is not None:
+            s.delete(mode)
+        tg.edit(chat_id, mid, "✅ Режим списка выключен. Фото снова считаются визитками.")
+        tg.answer_callback(cq["id"])
+        return []
+    elif kind == "lu":  # отменить импорт пачки
+        removed, kept = crm.undo_batch(s, args[0])
+        extra = f"\nОставлено {kept}: к ним уже добавлены заметки." if kept else ""
+        tg.edit(chat_id, mid, f"↩️ Импорт отменён: удалено контактов — {removed}.{extra}\n"
+                              "Дополнения у контактов, которые уже были в базе, сохранены.")
+        tg.answer_callback(cq["id"], "Отменено")
         return []
     elif kind == "f":  # попросить поисковый запрос
         tg.answer_callback(cq["id"])

@@ -69,13 +69,16 @@ def logout(request: Request):
 
 
 @router.get("/", response_class=HTMLResponse)
-def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = ""):
+def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = "",
+          batch: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with SessionLocal() as s:
         cards = crm.search(s, q, limit=10_000) if q else list(s.scalars(select(Card).order_by(Card.created_at.desc())))
         if status:
             cards = [c for c in cards if c.status == status]
+        if batch:
+            cards = [c for c in cards if c.batch == batch]
         for group, value in tags.items():
             if value == "none":
                 cards = [c for c in cards if not getattr(c, group)]
