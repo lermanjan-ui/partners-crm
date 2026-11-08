@@ -72,6 +72,8 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
   .tag.t-hot { background: #4a1f1f; color: #ffb4ab; } .tag.t-warm { background: #3d3214; color: #ffd27a; }
   .tag.t-cold { background: #15304a; color: #9ccaff; } .tag.t-investor { background: #173a22; color: #8fd9a3; }
 }
+.batchbar form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.batchbar .btn.ghost { margin: 0; }
 pre { white-space: pre-wrap; font: 13px/1.4 ui-monospace, monospace; }
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }

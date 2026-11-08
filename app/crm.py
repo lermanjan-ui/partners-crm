@@ -466,14 +466,20 @@ def run_list_import(att_id: int, chat_id: int, reply_to: int | None, author: str
             tg.send(chat_id, f"⚠️ Не удалось разобрать список: {esc(str(e)[:300])}\nСкриншот сохранён — пришлите его ещё раз.",
                     reply_to=reply_to)
         return
-    where, channel = LIST_SOURCES.get(result.get("source"), LIST_SOURCES["other"])
+    people = result.get("people") or []
+    source = result.get("source")
+    # «~» перед именем бывает только в WhatsApp — это надёжнее, чем догадка модели по интерфейсу
+    if any(p.get("tilde") or (p.get("name") or "").lstrip().startswith("~") for p in people):
+        source = "whatsapp"
+    result = {**result, "source": source}
+    where, channel = LIST_SOURCES.get(source, LIST_SOURCES["other"])
     group = (result.get("group_name") or "").strip()
     origin = "Из " + (f"группы {where} «{group}»" if group else (f"списка {where}" if where else "списка участников"))
     batch = f"L{att_id}"
     created, updated, cut, seen = [], [], 0, set()
     with LOCK, SessionLocal() as s:
         cards = list(s.scalars(select(Card)))
-        for p in result.get("people") or []:
+        for p in people:
             name = _clean_name(p.get("name"))
             phone = ocr.norm_phone(p.get("phone") or "") if p.get("phone") else ""
             username = (p.get("username") or "").strip() or None
@@ -517,7 +523,8 @@ def run_list_import(att_id: int, chat_id: int, reply_to: int | None, author: str
         s.commit()
         text = list_report(created, updated, cut, origin)
         if tg:
-            buttons = [[("↩️ Отменить импорт", f"lu:{batch}")]] if created else []
+            buttons = [[("💬 Это WhatsApp", f"ls:{batch}:whatsapp"), ("✈️ Это Telegram", f"ls:{batch}:telegram")],
+                       [("↩️ Отменить импорт", f"lu:{batch}")]] if created else []
             if created and settings.public_url.startswith("https://"):
                 buttons.append([("Открыть в CRM", f"{settings.public_url}/?batch={batch}")])
             sent = tg.send(chat_id, text, reply_to=reply_to, buttons=buttons or None)
@@ -542,6 +549,41 @@ def list_report(created, updated, cut, origin) -> str:
     if not created and not updated:
         lines.append("Людей на скриншоте не нашлось.")
     return "\n".join(lines)
+
+
+SOURCE_NAMES = {"whatsapp": "WhatsApp", "telegram": "Telegram"}
+
+
+def convert_batch(s, batch: str, to: str) -> int:
+    """Исправить источник у контактов пачки: WhatsApp ↔ Telegram (о контакте, ники, номера WhatsApp, тег «Откуда»)."""
+    target = SOURCE_NAMES[to]
+    other = SOURCE_NAMES["telegram" if to == "whatsapp" else "whatsapp"]
+    n = 0
+    for card in s.scalars(select(Card).where(Card.batch == batch, Card.source == "list")):
+        if card.about:
+            card.about = re.sub(rf"(Из (?:группы|списка)) {other}\b", rf"\1 {target}", card.about)
+            card.about = re.sub(r"Из списка участников\b", f"Из списка {target}", card.about)
+        socials = []
+        for v in card.socials or []:
+            m = re.match(r"\s*(?:Telegram|WhatsApp|Ник)\s*:\s*(@\S+)", v, re.I)
+            if m:
+                socials.append(f"{target}: {m.group(1)}")
+            elif to == "telegram" and re.match(r"\s*whats\s*app\s*:\s*\+", v, re.I):
+                continue  # номер в Telegram-группе — просто телефон
+            else:
+                socials.append(v)
+        if to == "whatsapp":
+            for p in card.phones or []:
+                if p.startswith("+") and f"WhatsApp: {p}" not in socials:
+                    socials.append(f"WhatsApp: {p}")
+        card.socials = list(dict.fromkeys(socials))
+        if "channel" not in (card.edited_fields or []):
+            if to == "whatsapp" and card.channel in (None, "wa_base"):
+                card.channel = "wa_base"
+            elif to == "telegram" and card.channel == "wa_base":
+                card.channel = None
+        n += 1
+    return n
 
 
 def undo_batch(s, batch: str) -> tuple[int, int]:

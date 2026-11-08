@@ -621,3 +621,58 @@ def test_list_mode_expires(env):
     n_before = len(tg.sent)
     post(client, **msg(811, photo=[{"file_id": "card2", "file_size": 10}]))
     assert "Визитка принята" in tg.sent[n_before]["text"]
+
+
+def test_list_whatsapp_detected_by_tilde_even_if_model_says_telegram(env):
+    client, tg = env
+    ocr.extract_people = lambda files: {"source": "telegram", "group_name": "Founders & CEOs @ Web Summit", "people": [
+        {"name": "Saeed", "subtitle": "NetGreener, CEO", "position": "CEO", "company": "NetGreener", "website": None,
+         "phone": "+1 (514) 262-3792", "username": None, "cut_off": False, "tilde": True},
+        {"name": "Motin", "subtitle": "Founder and CEO Optyv", "position": "Founder and CEO", "company": "Optyv",
+         "website": None, "phone": None, "username": "@mrqmotin", "cut_off": False, "tilde": True}]}
+    post(client, **msg(920, text="/list"))
+    post(client, **msg(921, document={"file_id": "g2", "mime_type": "image/png", "file_name": "g.png", "file_size": 10}))
+    post(client, **msg(922, text="/done"))
+    assert "Из группы WhatsApp" in next(m for m in reversed(tg.sent) if "Добавлено" in m["text"])["text"]
+    with SessionLocal() as s:
+        saeed = s.query(Card).filter_by(full_name="Saeed").one()
+        motin = s.query(Card).filter_by(full_name="Motin").one()
+        assert saeed.channel == "wa_base" and saeed.whatsapp_numbers == ["15142623792"]
+        assert motin.socials == ["WhatsApp: @mrqmotin"] and "Telegram" not in (motin.about or "")
+
+
+def test_fix_batch_source_like_on_screenshot(env):
+    """Контакт, ошибочно заведённый как Telegram (как на скрине), исправляется кнопкой на WhatsApp и обратно."""
+    client, tg = env
+    with SessionLocal() as s:
+        med = Card(full_name="Med Said Meliji", source="list", batch="L777", temp="cold",
+                   about="Из группы Telegram «Founders & CEOs @ Web Summit»", socials=["Telegram: @s.meliji"])
+        sheila = Card(full_name="Sheila", source="list", batch="L777", temp="cold", phones=["+12145583809"],
+                      about="Из группы Telegram «Founders & CEOs @ Web Summit»", socials=[])
+        other = Card(full_name="Чужой", source="list", batch="L778", socials=["Telegram: @x"])
+        s.add_all([med, sheila, other])
+        s.commit()
+        ids = (med.id, sheila.id, other.id)
+    # кнопка в боте
+    post(client, "callback_query", id="ls", data="ls:L777:whatsapp",
+         **{"from": {"id": 1}, "message": {"message_id": 5, "chat": {"id": 1}}})
+    assert "Источник исправлен у 2" in tg.sent[-1]["text"]
+    with SessionLocal() as s:
+        med, sheila, other = (s.get(Card, i) for i in ids)
+        assert med.socials == ["WhatsApp: @s.meliji"] and med.about == "Из группы WhatsApp «Founders & CEOs @ Web Summit»"
+        assert sheila.socials == ["WhatsApp: +12145583809"] and sheila.whatsapp_numbers == ["12145583809"]
+        assert med.channel == sheila.channel == "wa_base"
+        assert other.socials == ["Telegram: @x"]  # другая пачка не тронута
+    # на сайте — обратно и снова (идемпотентно)
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    assert "Источник неверный?" in client.get("/?batch=L777").text
+    assert "пачка импорта" in client.get(f"/c/{ids[0]}").text
+    client.post("/batch/L777/source", data={"to": "telegram"})
+    with SessionLocal() as s:
+        med, sheila = s.get(Card, ids[0]), s.get(Card, ids[1])
+        assert med.socials == ["Telegram: @s.meliji"] and sheila.socials == [] and sheila.channel is None
+    client.post("/batch/L777/source", data={"to": "whatsapp"})
+    client.post("/batch/L777/source", data={"to": "whatsapp"})
+    with SessionLocal() as s:
+        sheila = s.get(Card, ids[1])
+        assert sheila.socials == ["WhatsApp: +12145583809"] and sheila.channel == "wa_base"

@@ -87,7 +87,8 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
         counts = dict(s.execute(select(Note.card_id, func.count()).group_by(Note.card_id)).all())
         thumbs = dict(s.execute(select(Attachment.card_id, func.min(Attachment.id))
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
-    return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs)
+    return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs,
+                  batch=batch)
 
 
 @router.get("/c/new", response_class=HTMLResponse)
@@ -226,6 +227,17 @@ def rerun_ocr(request: Request, card_id: int):
         s.commit()
     crm.start_ocr(card_id, None)
     return RedirectResponse(f"/c/{card_id}", 303)
+
+
+@router.post("/batch/{batch}/source")
+def batch_source(request: Request, batch: str, to: str = Form(...)):
+    user_of(request)
+    if to not in crm.SOURCE_NAMES:
+        raise HTTPException(400)
+    with crm.LOCK, SessionLocal() as s:
+        crm.convert_batch(s, batch, to)
+        s.commit()
+    return RedirectResponse(f"/?batch={batch}", 303)
 
 
 @router.post("/c/{card_id}/delete")

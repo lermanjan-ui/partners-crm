@@ -2,7 +2,7 @@
 {% block title %}{{ card.title }} — {{ card.code }}{% endblock %}
 {% block content %}
 <h1>{{ card.title }} <span class="muted">{{ card.code }}</span></h1>
-<p class="muted">Добавил {{ card.created_by or '—' }} · {{ card.created_at|dt('%d.%m.%Y %H:%M') }} · источник: {{ card.source }}</p>
+<p class="muted">Добавил {{ card.created_by or '—' }} · {{ card.created_at|dt('%d.%m.%Y %H:%M') }} · источник: {{ card.source }}{% if card.batch %} · <a href="/?batch={{ card.batch }}">пачка импорта</a>{% endif %}</p>
 
 {% if card.ocr_status == 'processing' %}<p class="note-box">⏳ Визитка распознаётся — обновите страницу через несколько секунд.</p>{% endif %}
 {% if card.ocr_status == 'from_note' %}<p class="note-box">⏳ Заполняю контакт из заметки — обновите страницу через несколько секунд.</p>{% endif %}

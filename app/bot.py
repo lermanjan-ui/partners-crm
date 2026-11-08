@@ -403,6 +403,17 @@ def on_callback(s, tg, cq: dict) -> list[tuple]:
         tg.edit(chat_id, mid, "✅ Режим списка выключен. Фото снова считаются визитками.")
         tg.answer_callback(cq["id"])
         return []
+    elif kind == "ls":  # исправить источник пачки (WhatsApp ↔ Telegram)
+        batch, to = (args[0], args[1]) if len(args) == 2 else (None, None)
+        if to not in crm.SOURCE_NAMES:
+            tg.answer_callback(cq["id"], "Не найдено")
+            return []
+        n = crm.convert_batch(s, batch, to)
+        tg.answer_callback(cq["id"], f"Исправлено: {n} → {crm.SOURCE_NAMES[to]}")
+        tg.send(chat_id, f"✅ Источник исправлен у {n} контактов: {crm.SOURCE_NAMES[to]}"
+                         + (" (номера → кнопка WhatsApp, тег 💬 База WhatsApp)" if to == "whatsapp" else "") + ".",
+                reply_to=mid)
+        return []
     elif kind == "lu":  # отменить импорт пачки
         removed, kept = crm.undo_batch(s, args[0])
         extra = f"\nОставлено {kept}: к ним уже добавлены заметки." if kept else ""

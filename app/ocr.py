@@ -85,7 +85,8 @@ The image may be sent as an overview plus zoomed-in fragments of the same screen
 fragments are the same rows — output each person once.
 
 For each row:
-- name: the display name exactly as shown, WITHOUT the leading "~" (WhatsApp marks unsaved contacts with "~").
+- name: the display name exactly as shown, WITHOUT the leading "~".
+- tilde: true if the name is shown with a leading "~" (WhatsApp marks contacts not saved in the phone book this way).
 - subtitle: the grey line(s) under the name that are not a phone or a @username (status / about text), verbatim; null if none.
 - position, company, website: only if the subtitle clearly contains them
   ("Paraltera Founder & CEO" → position "Founder & CEO", company "Paraltera";
@@ -96,8 +97,14 @@ For each row:
 
 Ignore: labels like "Admin / Админ / You / Вы", the screen title, member counters, the search field,
 the alphabet index on the right, section letters, buttons.
-source: "whatsapp" for a WhatsApp group / community member list, "telegram" for Telegram,
-"ws_app" for the Web Summit app, otherwise "other".
+source: where the list comes from. Decide by the UI, not by the group name:
+- "whatsapp": names with a leading "~"; phone numbers shown under names; a search field like
+  "Имя, номер, @имя_пользователя или группу" / "Search name or number"; title "Поиск участников" /
+  "Search members" with "N человека"; "Админ" / "Group admin" labels on the right; "Сообщество" / community.
+- "telegram": statuses like "был(а) в сети", "last seen", "online" under names; "участников / members" with
+  online counters; phone numbers are normally NOT shown; no "~" before names.
+- "ws_app": the Web Summit app UI.
+- otherwise "other". If unsure between WhatsApp and Telegram, phones under names + "~" mean WhatsApp.
 group_name: the group / community name if visible anywhere (also faded in the background header), else null.
 Never invent people or values: if unreadable, use null."""
 
@@ -117,8 +124,9 @@ LIST_SCHEMA = {
                 "phone": {"type": ["string", "null"]},
                 "username": {"type": ["string", "null"]},
                 "cut_off": {"type": "boolean"},
+                "tilde": {"type": "boolean"},
             },
-            "required": ["name", "subtitle", "position", "company", "website", "phone", "username", "cut_off"],
+            "required": ["name", "subtitle", "position", "company", "website", "phone", "username", "cut_off", "tilde"],
         }},
     },
     "required": ["source", "group_name", "people"],

@@ -15,6 +15,15 @@
   {% endfor %}
   <button class="btn">Найти</button>
 </form>
+{% if batch %}
+<div class="panel batchbar">
+  <b>Пачка импорта из списка</b> · <a href="/">показать всех</a>
+  <form method="post" action="/batch/{{ batch }}/source"><span class="muted">Источник неверный?</span>
+    <button class="btn ghost" name="to" value="whatsapp">💬 Это WhatsApp</button>
+    <button class="btn ghost" name="to" value="telegram">✈️ Это Telegram</button>
+  </form>
+</div>
+{% endif %}
 <p class="muted">Контактов: {{ cards|length }}</p>
 <div class="list">
 {% for c in cards %}
