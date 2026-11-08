@@ -53,6 +53,10 @@ label.warn input, label.warn textarea { border-color: var(--warn); background: v
 .note video { max-width: 100%; margin-top: 6px; }
 .sumline { display: block; font-size: 13px; color: var(--muted); margin-top: 2px; }
 button.link { background: none; border: 0; color: var(--accent); font: inherit; cursor: pointer; padding: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.act { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 20px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 14px; }
+.act.wa { background: #25d366; border-color: #25d366; color: #fff; font-weight: 600; }
+.act.li { color: #0a66c2; font-weight: 600; }
 pre { white-space: pre-wrap; font: 13px/1.4 ui-monospace, monospace; }
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }

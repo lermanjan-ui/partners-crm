@@ -28,7 +28,7 @@ def parse_card_id(text: str | None) -> int | None:
 
 def haystack(card: Card, notes_text: str = "") -> str:
     parts = [card.code, card.full_name, card.position, card.company, card.website, card.address, card.country,
-             card.raw_text, card.summary, notes_text, *(card.emails or []), *(card.socials or [])]
+             card.raw_text, card.summary, card.about, notes_text, *(card.emails or []), *(card.socials or [])]
     parts += [ocr.phone_key(p) for p in card.phones or []]
     return " ".join(p for p in parts if p).lower()
 
@@ -95,7 +95,7 @@ def summary(s, card: Card) -> str:
     if sub:
         lines.append(sub)
     for icon, values in (("📞", card.phones), ("✉️", card.emails), ("🔗", card.socials)):
-        lines += [f"{icon} {esc(v)}" for v in values or []]
+        lines += [f"{'💬' if re.match(r'whats', v, re.I) else icon} {esc(v)}" for v in values or []]
     for icon, v in (("🌐", card.website), ("📍", card.address)):
         if v:
             lines.append(f"{icon} {esc(v)}")
@@ -107,6 +107,9 @@ def summary(s, card: Card) -> str:
         lines.append("⚠️ Не удалось заполнить автоматически — данные можно внести в CRM.")
     elif card.ocr_status == "done" and not (card.full_name or card.company or card.phones or card.emails):
         lines.append("⚠️ Контакты не найдены — фото сохранено.")
+    if card.about and not card.summary:
+        about = card.about if len(card.about) <= 400 else card.about[:400] + "…"
+        lines.append(f"ℹ️ {esc(about)}")
     if card.summary:
         lines.append(f"\n🧠 <b>Сводка</b>\n{esc(card.summary)}")
     if card.unreadable:
@@ -118,8 +121,12 @@ def summary(s, card: Card) -> str:
 
 
 def card_buttons(card: Card):
+    rows = [[(f"💬 WhatsApp {'+' + n if len(card.whatsapp_numbers) > 1 else ''}".strip(), f"https://wa.me/{n}")]
+            for n in card.whatsapp_numbers[:3]]
     url = card_url(card)
-    return [[("Открыть в CRM", url)]] if url else None
+    if url:
+        rows.append([("Открыть в CRM", url)])
+    return rows or None
 
 
 def link(s, chat_id: int, message_id: int, kind: str, card_id=None, note_id=None) -> None:
@@ -160,13 +167,16 @@ def run_ocr(card_id: int, attachment_ids: list[int] | None, tg: Telegram | None 
         card = s.get(Card, card_id)
         if card is None:
             return
+        new_notes = []
         if result is not None:
             ocr.apply_result(card, result)
             card.ocr_status, card.ocr_error = "done", None
+            new_notes = add_contact_messages(s, card, result.get("messages") or [])
         else:
             card.ocr_status, card.ocr_error = "error", error
         s.commit()
-        has_notes = s.scalar(select(Note.id).where(Note.card_id == card_id).limit(1)) is not None
+        long_notes = [n.id for n in new_notes if n.ai_status == "processing"]
+        has_notes = card.about is not None or s.scalar(select(Note.id).where(Note.card_id == card_id).limit(1)) is not None
         if tg and chat_id:
             try:
                 sent = tg.send(chat_id, summary(s, card), reply_to=reply_to, buttons=card_buttons(card))
@@ -174,8 +184,28 @@ def run_ocr(card_id: int, attachment_ids: list[int] | None, tg: Telegram | None 
                 s.commit()
             except Exception:  # noqa: BLE001
                 log.exception("cannot send OCR result for card %s", card_id)
-    if result is not None and has_notes:
+    for note_id in long_notes:
+        start_note_ai(note_id)  # длинное сообщение — выжимка, затем сводка
+    if result is not None and has_notes and not long_notes:
         schedule_card_summary(card_id)
+
+
+def add_contact_messages(s, card: Card, messages: list[str]) -> list[Note]:
+    """Сообщения, которые контакт сам написал (видны на скриншоте), — в историю дословно, без повторов."""
+    existing = {t for (t,) in s.execute(select(Note.text).where(Note.card_id == card.id, Note.source == "ocr"))}
+    out = []
+    for text in messages:
+        text = (text or "").strip()
+        if not text or text in existing:
+            continue
+        note = Note(card_id=card.id, text=text, author="Сообщение контакта", source="ocr")
+        if len(text) >= settings.summary_min_chars:
+            note.ai_status = "processing"
+        s.add(note)
+        existing.add(text)
+        out.append(note)
+    s.flush()
+    return out
 
 
 def spawn(fn, *args) -> None:
@@ -201,9 +231,12 @@ def needs_ai(note: Note, att: Attachment | None) -> bool:
 
 
 def card_info(card: Card) -> str:
-    parts = [card.full_name, card.position, card.company, card.website, card.country,
+    parts = [card.full_name, card.position, card.company, card.website, card.address or card.country,
              ", ".join(card.phones or []), ", ".join(card.emails or [])]
-    return " · ".join(p for p in parts if p) or card.title
+    info = " · ".join(p for p in parts if p) or card.title
+    if card.about:
+        info += "\nО контакте: " + card.about[:2000]
+    return info
 
 
 def process_note(note_id: int, tg: Telegram | None = None) -> None:
@@ -359,7 +392,7 @@ def build_card_summary(card_id: int) -> None:
             body = "\n".join(x for x in (n.text, n.transcript) if x).strip()
             if body:
                 notes.append(f"[{n.created_at:%d.%m %H:%M}, {n.author or '—'}] {body[:4000]}")
-    if not notes:
+    if not notes and not card.about:
         return
     summary = ai.summarize_card(info, notes[-60:])
     with LOCK, SessionLocal() as s:

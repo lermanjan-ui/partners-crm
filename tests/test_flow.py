@@ -394,3 +394,59 @@ def test_tall_screenshot_is_split_into_fragments():
 
 def test_prompt_prefers_recipient_email():
     assert "Кому" in ocr.PROMPT and "IGNORE" in ocr.PROMPT
+
+
+def test_websummit_whatsapp_linkedin_screenshots(env):
+    client, tg = env
+    ws = {"full_name": "Massimiliano Sulpizi", "position": "Serial Entrepreneur | Investor", "company": "EquityMatch.co",
+          "phones": [], "emails": [], "website": None, "address": "London, United Kingdom", "country": "United Kingdom",
+          "socials": [], "about": "Role at event: INVESTOR\nI'm a serial entrepreneur, six companies established.\nIndustry: Venture capital & private equity",
+          "messages": ["Hi Nikita, let's meet at the summit. Join me on EquityMatch.co.\nBest.\nMax"],
+          "all_text": "Massimiliano Sulpizi", "uncertain_fields": []}
+    OCR_RESULTS["next"] = ws
+    post(client, **msg(600, document={"file_id": "ws", "mime_type": "image/png", "file_name": "ws.png", "file_size": 10}))
+    with SessionLocal() as s:
+        card = last_card(s)
+        assert card.about.startswith("Role at event") and card.summary
+        msgs = s.query(Note).filter_by(card_id=card.id, source="ocr").all()
+        assert len(msgs) == 1 and msgs[0].author == "Сообщение контакта" and "let's meet" in msgs[0].text
+    # WhatsApp-скрин ответом на визитку: номер → телефоны + WhatsApp, сообщение не дублируется
+    OCR_RESULTS["next"] = {**{k: None for k in ("full_name", "position", "company", "website", "address", "country", "about")},
+                           "phones": ["+44 7539 049424"], "emails": [], "socials": ["WhatsApp: +44 7539 049424"],
+                           "messages": ws["messages"], "all_text": "+44 7539 049424", "uncertain_fields": []}
+    post(client, **msg(601, reply_to=600, document={"file_id": "wa", "mime_type": "image/png", "file_name": "wa.png", "file_size": 10}))
+    # LinkedIn: описание дополняется, а не затирается
+    OCR_RESULTS["next"] = {**OCR_RESULTS["next"], "phones": [], "socials": [], "messages": [],
+                           "position": "Entrepreneur | Angel Investor", "about": "Board Member, Speaker"}
+    post(client, **msg(602, reply_to=600, document={"file_id": "li", "mime_type": "image/png", "file_name": "li.png", "file_size": 10}))
+    OCR_RESULTS.clear()
+    with SessionLocal() as s:
+        card = s.get(Card, card.id)
+        assert card.phones == ["+447539049424"] and card.socials == ["WhatsApp: +447539049424"]
+        assert card.whatsapp_numbers == ["447539049424"]
+        assert card.position == "Serial Entrepreneur | Investor"  # первое значение не затирается
+        assert "Board Member" in card.about and card.about.count("serial entrepreneur") == 1
+        assert s.query(Note).filter_by(card_id=card.id, source="ocr").count() == 1
+    wa_msg = tg.sent[-1]
+    assert any(btn[1] == "https://wa.me/447539049424" for row in wa_msg["buttons"] for btn in row)
+    assert "💬 WhatsApp" in wa_msg["text"]
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get(f"/c/{card.id}").text
+    assert 'href="https://wa.me/447539049424"' in page
+    assert "linkedin.com/search/results/people/?keywords=Massimiliano%20Sulpizi%20EquityMatch.co" in page
+    assert "со скриншота" in page and "О контакте" in page
+    # ручной ввод: строка WhatsApp в соцсетях даёт кнопку; ссылка LinkedIn — прямая
+    client.post(f"/c/{card.id}", data={"full_name": card.full_name, "company": card.company, "position": card.position,
+                                       "about": card.about, "address": card.address, "country": card.country,
+                                       "phones": "+447539049424", "socials": "WhatsApp: +998 90 111 22 33\nLinkedIn: linkedin.com/in/msulpizi",
+                                       "status": "new"})
+    with SessionLocal() as s:
+        card = s.get(Card, card.id)
+        assert card.whatsapp_numbers == ["998901112233"]
+        assert card.linkedin_url == "https://linkedin.com/in/msulpizi"
+
+
+def test_whatsapp_without_country_code_has_no_button():
+    c = Card(socials=["WhatsApp: 90 111 22 33", "Telegram: @x"])
+    assert c.whatsapp_numbers == []
+    assert Card(full_name=None).linkedin_url is None

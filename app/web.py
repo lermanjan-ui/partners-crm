@@ -254,10 +254,10 @@ def export(request: Request):
     buf.write("﻿")  # чтобы Excel открыл UTF-8 с кириллицей
     w = csv.writer(buf, delimiter=";")
     w.writerow(["ID", "Имя", "Должность", "Компания", "Телефоны", "Email", "Сайт", "Адрес", "Страна",
-                "Соцсети", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
+                "Соцсети", "О контакте", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
     for c in cards:
         w.writerow([c.code, c.full_name, c.position, c.company, "\n".join(c.phones or []), "\n".join(c.emails or []),
-                    c.website, c.address, c.country, "\n".join(c.socials or []), STATUSES.get(c.status, c.status),
+                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about, STATUSES.get(c.status, c.status),
                     c.created_by, _dt(c.created_at, "%d.%m.%Y"), c.summary, "\n".join(notes.get(c.id, []))])
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": f'attachment; filename="partners-{now():%Y%m%d}.csv"'})

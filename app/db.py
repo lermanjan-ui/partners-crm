@@ -1,4 +1,6 @@
+import re
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from sqlalchemy import (JSON, BigInteger, DateTime, ForeignKey, Integer, LargeBinary, String, Text,
                         create_engine)
@@ -21,11 +23,11 @@ STATUSES = {
     "rejected": "Отказ",
 }
 
-TEXT_FIELDS = ("full_name", "position", "company", "website", "address", "country")
+TEXT_FIELDS = ("full_name", "position", "company", "website", "address", "country", "about")
 LIST_FIELDS = ("phones", "emails", "socials")
 FIELD_LABELS = {
     "full_name": "Имя", "position": "Должность", "company": "Компания", "website": "Сайт",
-    "address": "Адрес", "country": "Страна", "phones": "Телефоны", "emails": "Email",
+    "address": "Адрес", "country": "Страна", "about": "О контакте", "phones": "Телефоны", "emails": "Email",
     "socials": "Соцсети / мессенджеры",
 }
 
@@ -42,6 +44,7 @@ class Card(Base):
     phones: Mapped[list] = mapped_column(JSON, default=list)
     emails: Mapped[list] = mapped_column(JSON, default=list)
     socials: Mapped[list] = mapped_column(JSON, default=list)
+    about: Mapped[str | None] = mapped_column(Text)  # био/описание из профиля (Web Summit, LinkedIn), отрасль
     raw_text: Mapped[str | None] = mapped_column(Text)          # весь распознанный текст визитки
     unreadable: Mapped[list] = mapped_column(JSON, default=list)  # поля, которые OCR не уверенно прочитал
     edited_fields: Mapped[list] = mapped_column(JSON, default=list)  # поля, исправленные вручную: OCR их не трогает
@@ -59,6 +62,30 @@ class Card(Base):
     @property
     def code(self) -> str:
         return f"#P{self.id}"
+
+    @property
+    def whatsapp_numbers(self) -> list[str]:
+        """Номера, помеченные как WhatsApp (строки «WhatsApp: +…» в соцсетях), — только с кодом страны."""
+        out = []
+        for v in self.socials or []:
+            if re.search(r"whats\s*app|wa\.me", v, re.I):
+                digits = re.sub(r"\D", "", v)
+                if len(digits) >= 8 and ("+" in v or "wa.me" in v.lower() or len(digits) >= 11) and digits not in out:
+                    out.append(digits)
+        return out
+
+    @property
+    def linkedin_url(self) -> str | None:
+        """Ссылка на профиль, если она есть; иначе — поиск в LinkedIn по имени и компании."""
+        for v in self.socials or []:
+            m = re.search(r"(?:https?://)?(?:[\w-]+\.)?linkedin\.com/[^\s,;]+", v, re.I)
+            if m:
+                url = m.group(0)
+                return url if url.startswith("http") else "https://" + url
+        if not self.full_name:
+            return None
+        query = " ".join(x for x in (self.full_name, self.company) if x)
+        return "https://www.linkedin.com/search/results/people/?keywords=" + quote(query)
 
     @property
     def title(self) -> str:
@@ -138,7 +165,7 @@ def init_db(url: str) -> None:
 
 # Новые колонки для уже существующей базы (create_all добавляет только новые таблицы).
 NEW_COLUMNS = {
-    "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP"},
+    "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP", "about": "TEXT"},
     "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT"},
 }
 
