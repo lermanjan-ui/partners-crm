@@ -59,6 +59,14 @@ def startup() -> None:
         # Голосовые/заметки, обработку которых прервал перезапуск.
         for note_id in s.scalars(select(Note.id).where(Note.ai_status == "processing")):
             crm.start_note_ai(note_id, tg)
+        # Новые контакты из заметок, которые не успели заполниться.
+        for card in s.scalars(select(Card).where(Card.ocr_status == "from_note")):
+            note = s.scalars(select(Note).where(Note.card_id == card.id).order_by(Note.id)).first()
+            if note is None:
+                card.ocr_status = "none"
+            elif note.ai_status != "processing":
+                crm.start_fill_card(card.id, note.id, tg)
+        s.commit()
 
 
 @app.get("/healthz")
@@ -101,3 +109,5 @@ def process(upd: dict) -> None:
             crm.start_note_ai(args[0], tg)
         elif kind == "card":
             crm.schedule_card_summary(args[0])
+        elif kind == "contact":
+            crm.start_fill_card(args[0], args[1], tg)

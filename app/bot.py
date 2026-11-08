@@ -26,6 +26,8 @@ HELP = """<b>Как пользоваться</b>
 
 /find текст — поиск по имени, компании, телефону, email
 /last — последние визитки
+🗣 <b>Без визитки</b> — надиктуйте голосовое: имя, компания, телефон, о чём говорили. На вопрос «К кому это?» нажмите «➕ Новый контакт» — бот заполнит карточку сам. Подойдёт и фото бейджа.
+
 /new Имя или компания — контакт без визитки"""
 
 IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
@@ -33,7 +35,8 @@ IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 
 def handle_update(s, tg: Telegram, upd: dict) -> list[tuple]:
     """Возвращает фоновые задания (запускаются после commit):
-    ("ocr", card_id, attachment_ids, chat_id, reply_to, delay) | ("note", note_id) | ("card", card_id)."""
+    ("ocr", card_id, attachment_ids, chat_id, reply_to, delay) | ("note", note_id) | ("card", card_id)
+    | ("contact", card_id, note_id)."""
     if s.get(ProcessedUpdate, upd["update_id"]):
         return []  # повторная доставка — игнорируем
     s.add(ProcessedUpdate(update_id=upd["update_id"]))
@@ -208,6 +211,7 @@ def show_choices(s, tg, chat_id, note_id, reply_to=None, query=None, edit_messag
         cards = crm.recent(s)
         head = "❓ <b>К кому это?</b> Выберите контакт:" if cards else "❓ <b>К кому это?</b> Пока нет ни одной визитки."
     buttons = [[(crm.short_label(c), f"a:{note_id}:{c.id}")] for c in cards]
+    buttons.append([("➕ Новый контакт", f"n:{note_id}")])
     buttons.append([("🔍 Найти", f"f:{note_id}"), ("✖ Отмена", f"x:{note_id}")])
     text = head + "\n<i>Или ответьте на это сообщение именем, компанией или телефоном.</i>"
     if edit_message_id:
@@ -282,6 +286,14 @@ def on_edit(s, tg, msg: dict) -> list[tuple]:
 
 # ---------- кнопки ----------
 
+def assign_note(s, note: Note, card: Card) -> None:
+    note.card_id = card.id
+    if note.attachment_id:
+        s.execute(update(Attachment).where(Attachment.id == note.attachment_id).values(card_id=card.id))
+    s.execute(update(TgLink).where(TgLink.note_id == note.id).values(card_id=card.id))
+    card.updated_at = now()
+
+
 def on_callback(s, tg, cq: dict) -> list[tuple]:
     user = cq.get("from") or {}
     data = cq.get("data") or ""
@@ -299,16 +311,29 @@ def on_callback(s, tg, cq: dict) -> list[tuple]:
         if note.card_id and note.card_id != card.id:
             tg.answer_callback(cq["id"], "Уже привязано к другому контакту")
             return []
-        note.card_id = card.id
-        if note.attachment_id:
-            s.execute(update(Attachment).where(Attachment.id == note.attachment_id).values(card_id=card.id))
-        s.execute(update(TgLink).where(TgLink.note_id == note.id).values(card_id=card.id))
-        card.updated_at = now()
+        assign_note(s, note, card)
         tg.edit(chat_id, mid, f"📝 Добавлено к <b>{card.code}</b> {esc(card.title)}")
         crm.link(s, chat_id, mid, "bot", card_id=card.id)
         tg.answer_callback(cq["id"], "Сохранено")
         # голосовое ещё расшифровывается — сводку обновит сама расшифровка
         return [] if note.ai_status == "processing" else [("card", card.id)]
+    elif kind == "n":  # новый контакт из этой заметки (без визитки)
+        note = s.get(Note, int(args[0]))
+        if note is None:
+            tg.answer_callback(cq["id"], "Не найдено")
+            return []
+        if note.card_id:
+            tg.answer_callback(cq["id"], "Уже привязано к контакту")
+            return []
+        card = Card(source="bot", created_by=note.author, tg_chat_id=chat_id, ocr_status="from_note")
+        s.add(card)
+        s.flush()
+        assign_note(s, note, card)
+        tg.edit(chat_id, mid, f"➕ Новый контакт <b>{card.code}</b> — заполняю из заметки…")
+        crm.link(s, chat_id, mid, "bot", card_id=card.id)
+        tg.answer_callback(cq["id"], "Контакт создан")
+        # голосовое ещё расшифровывается — контакт заполнится после расшифровки
+        return [] if note.ai_status == "processing" else [("contact", card.id, note.id)]
     elif kind == "f":  # попросить поисковый запрос
         tg.answer_callback(cq["id"])
         sent = tg.send(chat_id, "🔍 Напишите имя, компанию, телефон или #ID:", force_reply=True,

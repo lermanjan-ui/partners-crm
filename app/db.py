@@ -62,7 +62,7 @@ class Card(Base):
 
     @property
     def title(self) -> str:
-        return self.full_name or self.company or f"Визитка {self.code}"
+        return self.full_name or self.company or f"Контакт {self.code}"
 
 
 class Attachment(Base):

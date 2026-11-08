@@ -101,8 +101,10 @@ def summary(s, card: Card) -> str:
             lines.append(f"{icon} {esc(v)}")
     if card.ocr_status == "processing":
         lines.append("⏳ Распознаётся…")
+    elif card.ocr_status == "from_note":
+        lines.append("⏳ Заполняю из заметки…")
     elif card.ocr_status == "error":
-        lines.append("⚠️ Распознать не удалось — фото сохранено, данные можно внести в CRM.")
+        lines.append("⚠️ Не удалось заполнить автоматически — данные можно внести в CRM.")
     elif card.ocr_status == "done" and not (card.full_name or card.company or card.phones or card.emails):
         lines.append("⚠️ Контакты не найдены — фото сохранено.")
     if card.summary:
@@ -246,8 +248,51 @@ def process_note(note_id: int, tg: Telegram | None = None) -> None:
             except Exception:  # noqa: BLE001
                 log.exception("cannot send transcript for note %s", note_id)
         card_id = note.card_id
-    if card_id:
+        fill = card is not None and card.ocr_status == "from_note"
+    if fill:
+        fill_card_from_note(card_id, note_id, tg)  # сам обновит сводку
+    elif card_id:
         schedule_card_summary(card_id)
+
+
+def fill_card_from_note(card_id: int, note_id: int, tg: Telegram | None = None) -> None:
+    """Новый контакт без визитки: имя, компания, телефон и т.д. — из текста или расшифровки заметки."""
+    with SessionLocal() as s:
+        note = s.get(Note, note_id)
+        text = "\n".join(x for x in (note.text, note.transcript) if x).strip() if note else ""
+    result, error = None, None
+    if text:
+        try:
+            result = ai.extract_contact(text)
+        except Exception as e:  # noqa: BLE001
+            log.exception("contact extraction failed for card %s", card_id)
+            error = str(e)[:500]
+    else:
+        error = "в заметке нет текста"
+    with LOCK, SessionLocal() as s:
+        card, note = s.get(Card, card_id), s.get(Note, note_id)
+        if card is None:
+            return
+        if result is not None:
+            ocr.apply_result(card, result)
+            card.ocr_status, card.ocr_error = "none", None
+        else:
+            card.ocr_status, card.ocr_error = "error", error
+        s.commit()
+        if tg and card.tg_chat_id:
+            try:
+                text = summary(s, card).replace("\n<i>Ответьте", "\n<i>Имя и контакты можно поправить в CRM. Ответьте", 1)
+                sent = tg.send(card.tg_chat_id, text, reply_to=note.tg_message_id if note else None,
+                               buttons=card_buttons(card))
+                link(s, card.tg_chat_id, sent["message_id"], "bot", card_id=card.id)
+                s.commit()
+            except Exception:  # noqa: BLE001
+                log.exception("cannot send new contact %s", card_id)
+    schedule_card_summary(card_id)
+
+
+def start_fill_card(card_id: int, note_id: int, tg: Telegram | None = None) -> None:
+    spawn(fill_card_from_note, card_id, note_id, tg)
 
 
 def voice_message(card: Card | None, note: Note) -> str:

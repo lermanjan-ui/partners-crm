@@ -24,7 +24,7 @@
     </span>
     <span class="meta">
       <span class="tag s-{{ c.status }}">{{ STATUSES.get(c.status, c.status) }}</span>
-      {% if c.ocr_status == 'processing' %}<span class="tag">⏳ распознаётся</span>{% endif %}
+      {% if c.ocr_status in ('processing', 'from_note') %}<span class="tag">⏳ заполняется</span>{% endif %}
       {% if c.unreadable or c.ocr_status == 'error' %}<span class="tag warn">проверить</span>{% endif %}
       <span class="muted">{{ c.created_at|dt('%d.%m %H:%M') }}{% if counts.get(c.id) %} · 📝 {{ counts[c.id] }}{% endif %}</span>
     </span>

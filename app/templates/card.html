@@ -5,7 +5,8 @@
 <p class="muted">Добавил {{ card.created_by or '—' }} · {{ card.created_at|dt('%d.%m.%Y %H:%M') }} · источник: {{ card.source }}</p>
 
 {% if card.ocr_status == 'processing' %}<p class="note-box">⏳ Визитка распознаётся — обновите страницу через несколько секунд.</p>{% endif %}
-{% if card.ocr_status == 'error' %}<p class="note-box warn">⚠️ Распознать не удалось: {{ card.ocr_error }}</p>{% endif %}
+{% if card.ocr_status == 'from_note' %}<p class="note-box">⏳ Заполняю контакт из заметки — обновите страницу через несколько секунд.</p>{% endif %}
+{% if card.ocr_status == 'error' %}<p class="note-box warn">⚠️ Не удалось заполнить автоматически: {{ card.ocr_error }}</p>{% endif %}
 {% if card.unreadable %}<p class="note-box warn">⚠️ Проверьте поля: {% for f in card.unreadable %}{{ FIELD_LABELS.get(f, f) }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
 {% for other, why in similar %}<p class="note-box">🔁 Похоже на <a href="/c/{{ other.id }}">{{ other.code }} {{ other.title }}</a> — {{ why }}</p>{% endfor %}
 

@@ -62,6 +62,15 @@ def fake_transcribe(data, filename, mime):
     return "Обсудили поставку оборудования, нужна презентация до пятницы, бюджет около 50 тысяч долларов"
 
 
+def fake_contact(text):
+    if "Мария" not in text and "поставку" not in text:
+        return {k: None for k in ("full_name", "position", "company", "website", "address", "country")} | {
+            "phones": [], "emails": [], "socials": [], "uncertain_fields": []}
+    return {"full_name": "Мария Ким" if "Мария" in text else "Пётр", "position": None, "company": "Globex",
+            "phones": ["+998 91 555 44 33"], "emails": ["maria@globex.uz"], "website": None, "address": None,
+            "country": None, "socials": [], "uncertain_fields": ["position"]}
+
+
 @pytest.fixture(scope="module")
 def env():
     fake = FakeTg()
@@ -71,6 +80,7 @@ def env():
     ai.transcribe = fake_transcribe
     ai.summarize_note = lambda text, ctx="": "КРАТКО: " + text[:40]
     ai.summarize_card = lambda info, notes: f"Кто: {info[:30]}\nЗаметок: {len(notes)}"
+    ai.extract_contact = fake_contact
     with TestClient(main.app) as client:
         yield client, fake
 
@@ -307,3 +317,60 @@ def test_migration_adds_columns(tmp_path):
     assert {"summary", "summary_at"} <= {c["name"] for c in inspect(eng).get_columns("cards")}
     with eng.begin() as c:
         assert c.execute(text("SELECT ai_status FROM notes WHERE id=1")).scalar() == "none"
+
+
+def ask_and_press_new(client, tg, mid, **content):
+    post(client, **msg(mid, **content))
+    ask = next(m for m in reversed(tg.sent) if "К кому это" in m["text"])
+    cb = next(row[0][1] for row in ask["buttons"] if row[0][0].startswith("➕"))
+    post(client, "callback_query", id=f"n{mid}", data=cb,
+         **{"from": {"id": 1}, "message": {"message_id": ask["id"], "chat": {"id": 1}}})
+    return ask
+
+
+def test_new_contact_from_text(env):
+    client, tg = env
+    ask_and_press_new(client, tg, 500, text="Мария Ким из Globex, +998915554433, maria собака globex.uz, хотят пилот")
+    assert any("Новый контакт" in e["text"] for e in tg.edits)
+    with SessionLocal() as s:
+        card = last_card(s)
+        assert card.full_name == "Мария Ким" and card.company == "Globex" and card.phones == ["+998915554433"]
+        assert card.ocr_status == "none" and "position" in card.unreadable and card.summary
+        note = s.query(Note).filter_by(tg_message_id=500).one()
+        assert note.card_id == card.id
+    assert "Мария Ким" in tg.sent[-1]["text"] and tg.sent[-1]["reply_to"] == 500
+    # ответ на присланную карточку — к этому же контакту
+    post(client, **msg(501, reply_to=tg.sent[-1]["id"], text="созвон в пятницу"))
+    with SessionLocal() as s:
+        assert s.query(Note).filter_by(tg_message_id=501).one().card_id == card.id
+
+
+def test_new_contact_from_voice_while_transcribing(env):
+    client, tg = env
+    queued = []
+    crm.spawn = lambda fn, *a: queued.append((fn, a))  # расшифровка «ещё идёт»
+    try:
+        ask_and_press_new(client, tg, 510, voice={"file_id": "v", "file_size": 10})
+        with SessionLocal() as s:
+            card = last_card(s)
+            assert card.ocr_status == "from_note" and card.full_name is None
+            assert card.title == f"Контакт #P{card.id}"
+        assert len(queued) == 1 and queued[0][0] is crm.process_note  # заполнение ждёт расшифровку
+    finally:
+        crm.spawn = lambda fn, *a: fn(*a)
+    fn, args = queued[0]
+    fn(*args)
+    with SessionLocal() as s:
+        card = s.get(Card, card.id)
+        assert card.full_name == "Пётр" and card.company == "Globex" and card.ocr_status == "none"
+        assert card.summary
+    assert "Пётр" in tg.sent[-1]["text"]
+
+
+def test_new_contact_nothing_found(env):
+    client, tg = env
+    ask_and_press_new(client, tg, 520, text="просто мысль без имени")
+    with SessionLocal() as s:
+        card = last_card(s)
+        assert card.ocr_status == "none" and card.title == f"Контакт #P{card.id}"
+    assert "поправить в CRM" in tg.sent[-1]["text"]
