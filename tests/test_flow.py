@@ -374,3 +374,23 @@ def test_new_contact_nothing_found(env):
         card = last_card(s)
         assert card.ocr_status == "none" and card.title == f"Контакт #P{card.id}"
     assert "поправить в CRM" in tg.sent[-1]["text"]
+
+
+def test_tall_screenshot_is_split_into_fragments():
+    from PIL import Image as Img
+
+    shot = Img.new("RGB", (1170, 2532), "white")
+    buf = io.BytesIO()
+    shot.save(buf, "PNG")
+    parts = ocr.to_images(buf.getvalue(), "image/png")
+    assert 3 <= len(parts) <= 5  # обзор + фрагменты
+    tiles = ocr.split_tall(shot)[1:]
+    assert tiles[0].size[1] < 2532 and tiles[-1].getbbox() is not None
+    # фрагменты с перекрытием покрывают весь скриншот: сумма высот больше исходной
+    assert sum(t.size[1] for t in tiles) > 2532
+    card = Img.new("RGB", (1000, 600), "white")  # обычная визитка не режется
+    assert len(ocr.split_tall(card)) == 1
+
+
+def test_prompt_prefers_recipient_email():
+    assert "Кому" in ocr.PROMPT and "IGNORE" in ocr.PROMPT
