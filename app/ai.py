@@ -91,9 +91,33 @@ TEXT_SCHEMA = {"type": "object", "additionalProperties": False,
                "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
 
 
-def summarize_note(text: str, card_context: str = "") -> str:
-    user = (f"Контакт: {card_context}\n\n" if card_context else "") + f"Заметка:\n{text}"
-    return _chat(NOTE_SYSTEM, user, TEXT_SCHEMA, "note_summary")["summary"].strip()
+TAGS_RULES = """Теги контакта — ставь ТОЛЬКО если в заметке это сказано прямо про этот контакт, иначе null:
+- kind: "investor" — прямо назван инвестором / фондом / ангелом; "partner" — прямо назван партнёром.
+- temp: "hot" — «горячий»; "warm" — «тёплый»; "cold" — «холодный» (или прямые синонимы: «очень заинтересован, горячий лид»).
+- channel: "booth" — «со стенда», «подошёл к стенду»; "offline" — «офлайн», «познакомились вживую не у стенда»;
+  "ws_app" — «из приложения Web Summit»; "wa_base" — «из базы WhatsApp».
+Отрицание («не горячий», «не инвестор») — это не тег: null."""
+
+NOTE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "summary": {"type": ["string", "null"]},
+        "kind": {"type": ["string", "null"], "enum": ["partner", "investor", None]},
+        "temp": {"type": ["string", "null"], "enum": ["cold", "warm", "hot", None]},
+        "channel": {"type": ["string", "null"], "enum": ["booth", "offline", "ws_app", "wa_base", None]},
+    },
+    "required": ["summary", "kind", "temp", "channel"],
+}
+
+
+def analyze_note(text: str, card_context: str = "", want_summary: bool = True) -> dict:
+    """Выжимка заметки (если нужна) + теги, названные в ней прямо."""
+    task = ("Сделай выжимку (summary) и определи теги." if want_summary
+            else "Выжимка не нужна (summary = null). Только определи теги.")
+    user = f"{task}\n\n" + (f"Контакт: {card_context}\n\n" if card_context else "") + f"Заметка:\n{text}"
+    r = _chat(NOTE_SYSTEM + "\n\n" + TAGS_RULES, user, NOTE_SCHEMA, "note_analysis")
+    r["summary"] = (r.get("summary") or "").strip() or None if want_summary else None
+    return r
 
 
 def summarize_card(card_info: str, notes: list[str]) -> str:
@@ -117,7 +141,7 @@ CONTACT_SYSTEM = """Менеджер на выставке надиктовал 
 def extract_contact(text: str) -> dict:
     from .ocr import SCHEMA
 
-    skip = {"all_text", "messages"}
+    skip = {"all_text", "messages", "kind", "channel"}
     schema = {**SCHEMA, "properties": {k: v for k, v in SCHEMA["properties"].items() if k not in skip},
               "required": [k for k in SCHEMA["required"] if k not in skip]}
     return _chat(CONTACT_SYSTEM, f"Заметка:\n{text}", schema, "contact_from_note")

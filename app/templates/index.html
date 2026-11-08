@@ -6,6 +6,13 @@
     <option value="">Все статусы</option>
     {% for k, v in STATUSES.items() %}<option value="{{ k }}" {% if k == status %}selected{% endif %}>{{ v }}</option>{% endfor %}
   </select>
+  {% for g, (title, values) in TAG_GROUPS.items() %}
+  <select name="{{ g }}" onchange="this.form.submit()">
+    <option value="">{{ title }}: все</option>
+    {% for k, v in values.items() %}<option value="{{ k }}" {% if tags[g] == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
+    <option value="none" {% if tags[g] == 'none' %}selected{% endif %}>{{ title }}: не задано</option>
+  </select>
+  {% endfor %}
   <button class="btn">Найти</button>
 </form>
 <p class="muted">Контактов: {{ cards|length }}</p>
@@ -23,6 +30,7 @@
       {% for e in c.emails[:1] %}{{ e }}{% endfor %}
     </span>
     <span class="meta">
+      {% for g in ('temp', 'kind', 'channel') %}{% if c[g] %}<span class="tag t-{{ c[g] }}">{{ TAG_GROUPS[g][1][c[g]] }}</span>{% endif %}{% endfor %}
       <span class="tag s-{{ c.status }}">{{ STATUSES.get(c.status, c.status) }}</span>
       {% if c.ocr_status in ('processing', 'from_note') %}<span class="tag">⏳ заполняется</span>{% endif %}
       {% if c.unreadable or c.ocr_status == 'error' %}<span class="tag warn">проверить</span>{% endif %}

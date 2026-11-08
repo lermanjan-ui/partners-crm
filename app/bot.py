@@ -11,7 +11,7 @@ from sqlalchemy import delete, select, update
 
 from . import crm
 from .config import settings
-from .db import Attachment, Card, MediaGroup, Note, ProcessedUpdate, TgLink, now
+from .db import TAG_GROUPS, Attachment, Card, MediaGroup, Note, ProcessedUpdate, TgLink, now
 from .tg import Telegram, esc
 
 log = logging.getLogger("bot")
@@ -276,22 +276,22 @@ def on_edit(s, tg, msg: dict) -> list[tuple]:
         return []
     note.prev_text, note.text, note.edited_at = note.text, text, now()
     att = s.get(Attachment, note.attachment_id) if note.attachment_id else None
-    if len(text) >= settings.summary_min_chars and not crm.is_audio(att):
-        note.ai_status = "processing"
-        return [("note", note.id)]
-    if not crm.is_audio(att):
-        note.summary = None  # стала короткой — выжимка не нужна
-    return [("card", note.card_id)] if note.card_id else []
+    if crm.is_audio(att):  # у голосового правится только подпись — расшифровка остаётся
+        return [("card", note.card_id)] if note.card_id else []
+    note.ai_status = "processing"  # заново: выжимка (если длинная) и теги
+    return [("note", note.id)]
 
 
 # ---------- кнопки ----------
 
-def assign_note(s, note: Note, card: Card) -> None:
+def assign_note(s, note: Note, card: Card) -> list[str]:
+    """Привязать заметку к контакту; теги, названные в заметке, переходят на контакт. Возвращает изменённые теги."""
     note.card_id = card.id
     if note.attachment_id:
         s.execute(update(Attachment).where(Attachment.id == note.attachment_id).values(card_id=card.id))
     s.execute(update(TgLink).where(TgLink.note_id == note.id).values(card_id=card.id))
     card.updated_at = now()
+    return card.set_tags(note.tags, by_user=True) if note.tags else []
 
 
 def on_callback(s, tg, cq: dict) -> list[tuple]:
@@ -311,8 +311,10 @@ def on_callback(s, tg, cq: dict) -> list[tuple]:
         if note.card_id and note.card_id != card.id:
             tg.answer_callback(cq["id"], "Уже привязано к другому контакту")
             return []
-        assign_note(s, note, card)
-        tg.edit(chat_id, mid, f"📝 Добавлено к <b>{card.code}</b> {esc(card.title)}")
+        changed = assign_note(s, note, card)
+        tags = "\n🏷 Теги: " + ", ".join(esc(c) for c in changed) if changed else ""
+        tg.edit(chat_id, mid, f"📝 Добавлено к <b>{card.code}</b> {esc(card.title)}{tags}",
+                crm.tag_buttons(card) if changed else None)
         crm.link(s, chat_id, mid, "bot", card_id=card.id)
         tg.answer_callback(cq["id"], "Сохранено")
         # голосовое ещё расшифровывается — сводку обновит сама расшифровка
@@ -334,6 +336,21 @@ def on_callback(s, tg, cq: dict) -> list[tuple]:
         tg.answer_callback(cq["id"], "Контакт создан")
         # голосовое ещё расшифровывается — контакт заполнится после расшифровки
         return [] if note.ai_status == "processing" else [("contact", card.id, note.id)]
+    elif kind == "t":  # тег: в группе одно значение; повторное нажатие снимает
+        card = s.get(Card, int(args[0]))
+        group, value = (args[1], args[2]) if len(args) == 3 else (None, None)
+        if card is None or group not in TAG_GROUPS or value not in TAG_GROUPS[group][1]:
+            tg.answer_callback(cq["id"], "Не найдено")
+            return []
+        new = None if getattr(card, group) == value else value
+        card.set_tags({group: new}, by_user=True)
+        card.updated_at = now()
+        try:
+            tg.edit_buttons(chat_id, mid, crm.card_buttons(card))
+        except Exception:  # noqa: BLE001 — старое сообщение могло быть удалено; тег уже сохранён
+            log.exception("cannot update buttons")
+        tg.answer_callback(cq["id"], TAG_GROUPS[group][1][value] if new else "Тег снят")
+        return []
     elif kind == "f":  # попросить поисковый запрос
         tg.answer_callback(cq["id"])
         sent = tg.send(chat_id, "🔍 Напишите имя, компанию, телефон или #ID:", force_reply=True,

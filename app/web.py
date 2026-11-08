@@ -13,12 +13,12 @@ from sqlalchemy import func, select
 
 from . import crm
 from .config import settings
-from .db import (FIELD_LABELS, LIST_FIELDS, STATUSES, TEXT_FIELDS, Attachment, Card, Note, SessionLocal,
+from .db import (FIELD_LABELS, LIST_FIELDS, STATUSES, TAG_GROUPS, TEXT_FIELDS, Attachment, Card, Note, SessionLocal,
                  now)
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-templates.env.globals.update(STATUSES=STATUSES, FIELD_LABELS=FIELD_LABELS)
+templates.env.globals.update(STATUSES=STATUSES, FIELD_LABELS=FIELD_LABELS, TAG_GROUPS=TAG_GROUPS)
 TZ = ZoneInfo(settings.timezone)
 
 
@@ -69,16 +69,22 @@ def logout(request: Request):
 
 
 @router.get("/", response_class=HTMLResponse)
-def index(request: Request, q: str = "", status: str = ""):
+def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = ""):
     user_of(request)
+    tags = {"kind": kind, "temp": temp, "channel": channel}
     with SessionLocal() as s:
         cards = crm.search(s, q, limit=10_000) if q else list(s.scalars(select(Card).order_by(Card.created_at.desc())))
         if status:
             cards = [c for c in cards if c.status == status]
+        for group, value in tags.items():
+            if value == "none":
+                cards = [c for c in cards if not getattr(c, group)]
+            elif value:
+                cards = [c for c in cards if getattr(c, group) == value]
         counts = dict(s.execute(select(Note.card_id, func.count()).group_by(Note.card_id)).all())
         thumbs = dict(s.execute(select(Attachment.card_id, func.min(Attachment.id))
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
-    return render(request, "index.html", cards=cards, q=q, status=status, counts=counts, thumbs=thumbs)
+    return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs)
 
 
 @router.get("/c/new", response_class=HTMLResponse)
@@ -147,6 +153,9 @@ async def save_card(request: Request, card_id: int):
         if form.get("status") in STATUSES:
             card.status = form["status"]
         card.edited_fields = sorted(edited)
+        # теги: меняем и закрепляем только то, что человек действительно поменял в форме
+        card.set_tags({g: form.get(g) or None for g in TAG_GROUPS
+                       if g in form and (form.get(g) or None) != getattr(card, g)}, by_user=True)
         card.unreadable = [f for f in card.unreadable or [] if f not in edited]
         s.commit()
     return RedirectResponse(f"/c/{card_id}", 303)
@@ -254,10 +263,11 @@ def export(request: Request):
     buf.write("﻿")  # чтобы Excel открыл UTF-8 с кириллицей
     w = csv.writer(buf, delimiter=";")
     w.writerow(["ID", "Имя", "Должность", "Компания", "Телефоны", "Email", "Сайт", "Адрес", "Страна",
-                "Соцсети", "О контакте", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
+                "Соцсети", "О контакте", "Тип", "Температура", "Откуда", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
     for c in cards:
         w.writerow([c.code, c.full_name, c.position, c.company, "\n".join(c.phones or []), "\n".join(c.emails or []),
-                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about, STATUSES.get(c.status, c.status),
+                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about,
+                    *[TAG_GROUPS[g][1].get(getattr(c, g), "") for g in TAG_GROUPS], STATUSES.get(c.status, c.status),
                     c.created_by, _dt(c.created_at, "%d.%m.%Y"), c.summary, "\n".join(notes.get(c.id, []))])
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": f'attachment; filename="partners-{now():%Y%m%d}.csv"'})

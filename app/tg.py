@@ -60,6 +60,14 @@ class Telegram:
             if "not modified" not in str(e):
                 raise
 
+    def edit_buttons(self, chat_id, message_id, buttons) -> None:
+        try:
+            self.call("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+                      reply_markup=self._markup(buttons) or {"inline_keyboard": []})
+        except TelegramError as e:
+            if "not modified" not in str(e):
+                raise
+
     def answer_callback(self, callback_id, text=None) -> None:
         try:
             self.call("answerCallbackQuery", callback_query_id=callback_id, text=text)

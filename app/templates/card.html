@@ -43,6 +43,13 @@
   {% endif %}
 
   <form method="post" action="/c/{{ card.id }}" class="panel fields">
+    {% for g, (title, values) in TAG_GROUPS.items() %}
+    <div class="seg-label">{{ title }}</div>
+    <div class="seg">
+      <label><input type="radio" name="{{ g }}" value="" {% if not card[g] %}checked{% endif %}><span>—</span></label>
+      {% for k, v in values.items() %}<label><input type="radio" name="{{ g }}" value="{{ k }}" {% if card[g] == k %}checked{% endif %}><span class="t-{{ k }}">{{ v }}</span></label>{% endfor %}
+    </div>
+    {% endfor %}
     <label>Статус
       <select name="status">{% for k, v in STATUSES.items() %}<option value="{{ k }}" {% if k == card.status %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
     </label>

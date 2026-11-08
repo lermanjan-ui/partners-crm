@@ -38,6 +38,9 @@ General rules:
   incoming chat bubbles), each verbatim as one string. Not our own messages, not system texts
   (e.g. "Messages are end-to-end encrypted").
 - all_text: transcription of all readable text relevant to the contact, line by line, in the original language.
+- kind: "investor" ONLY if explicit: the event role tag INVESTOR, or a title like Investor / Angel Investor /
+  VC / Partner at a fund. "partner" ONLY if the event role tag is STARTUP, PARTNER or EXHIBITOR. Otherwise null.
+- channel: "ws_app" if any image is a screenshot of the Web Summit app (profile / connection screen). Otherwise null.
 
 Source-specific rules:
 - Web Summit app profile: name; the line under it is "position, company" (e.g. "Serial Entrepreneur | Investor,
@@ -65,11 +68,13 @@ SCHEMA = {
         "socials": {"type": "array", "items": {"type": "string"}},
         "about": {"type": ["string", "null"]},
         "messages": {"type": "array", "items": {"type": "string"}},
+        "kind": {"type": ["string", "null"], "enum": ["partner", "investor", None]},
+        "channel": {"type": ["string", "null"], "enum": ["ws_app", None]},
         "all_text": {"type": "string"},
         "uncertain_fields": {"type": "array", "items": {"type": "string", "enum": list(TEXT_FIELDS + LIST_FIELDS)}},
     },
     "required": ["full_name", "position", "company", "phones", "emails", "website", "address", "country",
-                 "socials", "about", "messages", "all_text", "uncertain_fields"],
+                 "socials", "about", "messages", "kind", "channel", "all_text", "uncertain_fields"],
 }
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -203,3 +208,4 @@ def apply_result(card: Card, r: dict) -> None:
     if text:
         card.raw_text = f"{card.raw_text}\n---\n{text}" if card.raw_text else text
     card.unreadable = sorted((set(card.unreadable or []) | uncertain) - locked)
+    card.set_tags({"kind": r.get("kind"), "channel": r.get("channel")}, by_user=False)

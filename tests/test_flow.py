@@ -28,7 +28,10 @@ class FakeTg:
         return {"message_id": self.mid}
 
     def edit(self, chat_id, message_id, text, buttons=None):
-        self.edits.append({"id": message_id, "text": text})
+        self.edits.append({"id": message_id, "text": text, "buttons": buttons})
+
+    def edit_buttons(self, chat_id, message_id, buttons):
+        self.edits.append({"id": message_id, "text": None, "buttons": buttons})
 
     def answer_callback(self, *a, **k):
         pass
@@ -62,6 +65,14 @@ def fake_transcribe(data, filename, mime):
     return "Обсудили поставку оборудования, нужна презентация до пятницы, бюджет около 50 тысяч долларов"
 
 
+def fake_analyze(text, ctx="", want_summary=True):
+    low = text.lower()
+    tags = {"kind": "investor" if "инвестор" in low else ("partner" if "партн" in low else None),
+            "temp": "hot" if "горяч" in low else ("cold" if "холодн" in low else ("warm" if "тёпл" in low else None)),
+            "channel": "booth" if "со стенда" in low else ("wa_base" if "база whatsapp" in low else None)}
+    return {"summary": "КРАТКО: " + text[:40] if want_summary else None, **tags}
+
+
 def fake_contact(text):
     if "Мария" not in text and "поставку" not in text:
         return {k: None for k in ("full_name", "position", "company", "website", "address", "country")} | {
@@ -78,7 +89,7 @@ def env():
     ocr.extract = fake_extract
     crm.spawn = lambda fn, *a: fn(*a)  # фоновые задачи — синхронно
     ai.transcribe = fake_transcribe
-    ai.summarize_note = lambda text, ctx="": "КРАТКО: " + text[:40]
+    ai.analyze_note = fake_analyze
     ai.summarize_card = lambda info, notes: f"Кто: {info[:30]}\nЗаметок: {len(notes)}"
     ai.extract_contact = fake_contact
     with TestClient(main.app) as client:
@@ -254,7 +265,7 @@ def test_voice_and_summaries(env):
     post(client, **msg(402, reply_to=voice_reply["id"], text="короткая"))
     with SessionLocal() as s:
         short = s.query(Note).filter_by(tg_message_id=402).one()
-        assert short.card_id == card.id and short.summary is None and short.ai_status == "none"
+        assert short.card_id == card.id and short.summary is None
         assert "Заметок: 2" in s.get(Card, card.id).summary
     # длинный текст → выжимка
     long_text = "Очень длинная заметка " * 20
@@ -450,3 +461,79 @@ def test_whatsapp_without_country_code_has_no_button():
     c = Card(socials=["WhatsApp: 90 111 22 33", "Telegram: @x"])
     assert c.whatsapp_numbers == []
     assert Card(full_name=None).linkedin_url is None
+
+
+def test_tags(env):
+    client, tg = env
+    post(client, **msg(700, photo=[{"file_id": "t1", "file_size": 10}]))
+    with SessionLocal() as s:
+        card = last_card(s)
+    summary_msg = tg.sent[-1]
+    labels = [b[0] for row in summary_msg["buttons"] for b in row]
+    assert "🤝 Партнёр" in labels and "🔥 Горячий" in labels and "📱 Приложение WS" in labels
+
+    def press(group, value):
+        post(client, "callback_query", id="t", data=f"t:{card.id}:{group}:{value}",
+             **{"from": {"id": 1}, "message": {"message_id": summary_msg["id"], "chat": {"id": 1}}})
+        with SessionLocal() as s:
+            return s.get(Card, card.id)
+
+    c = press("kind", "partner")
+    assert c.kind == "partner" and "kind" in c.edited_fields
+    assert any("✅ 🤝 Партнёр" == b[0] for row in tg.edits[-1]["buttons"] for b in row)
+    c = press("kind", "investor")  # в группе только одно значение
+    assert c.kind == "investor"
+    c = press("kind", "investor")  # повторное нажатие снимает
+    assert c.kind is None
+    c = press("temp", "warm")
+    c = press("channel", "booth")
+    assert (c.temp, c.channel) == ("warm", "booth")
+
+    # прямые слова в заметке меняют тег и бот сообщает
+    post(client, **msg(701, reply_to=700, text="Горячий инвестор, хочет созвон"))
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        assert (c.kind, c.temp, c.channel) == ("investor", "hot", "booth")
+    assert "Теги:" in tg.sent[-1]["text"] and "🔥 Горячий" in tg.sent[-1]["text"]
+    # заметка без тегов ничего не меняет и не шлёт лишнего
+    n_sent = len(tg.sent)
+    post(client, **msg(702, reply_to=700, text="созвон в 15:00"))
+    assert len(tg.sent) == n_sent + 1  # только «Добавлено к»
+
+    # автоматика со скриншота не перебивает выбор человека, но заполняет пустое
+    OCR_RESULTS["next"] = {**fake_extract([]), "kind": "partner", "channel": "ws_app"}
+    crm.run_ocr(card.id, None)
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        assert (c.kind, c.channel) == ("investor", "booth")
+    post(client, **msg(703, document={"file_id": "ws2", "mime_type": "image/png", "file_name": "p.png", "file_size": 10}))
+    OCR_RESULTS.clear()
+    with SessionLocal() as s:
+        c2 = last_card(s)
+        assert (c2.kind, c2.channel) == ("partner", "ws_app") and "kind" not in (c2.edited_fields or [])
+
+    # теги из голосового без привязки переходят на контакт при выборе
+    post(client, **msg(704, text="холодный партнёр со стенда"))
+    ask = next(m for m in reversed(tg.sent) if "К кому это" in m["text"])
+    post(client, "callback_query", id="a", data=f"a:{ask_note_id(704)}:{c2.id}",
+         **{"from": {"id": 1}, "message": {"message_id": ask["id"], "chat": {"id": 1}}})
+    with SessionLocal() as s:
+        c2 = s.get(Card, c2.id)
+        assert (c2.kind, c2.temp, c2.channel) == ("partner", "cold", "booth")
+
+    # сайт: фильтры, метки, правка тегов формой
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get("/?temp=hot&kind=investor").text
+    assert f"#P{card.id}" in page and f"#P{c2.id}" not in page and "🔥 Горячий" in page
+    assert f"#P{c2.id}" in client.get("/?channel=booth&temp=cold").text
+    form = client.get(f"/c/{card.id}").text
+    assert 'name="temp" value="hot" checked' in form
+    client.post(f"/c/{card.id}", data={"temp": "warm", "kind": "investor", "channel": "booth", "status": "new"})
+    with SessionLocal() as s:
+        assert s.get(Card, card.id).temp == "warm"
+    assert "Температура" in client.get("/export.csv").text and "🌤 Тёплый" in client.get("/export.csv").text
+
+
+def ask_note_id(mid):
+    with SessionLocal() as s:
+        return s.query(Note).filter_by(tg_message_id=mid).one().id

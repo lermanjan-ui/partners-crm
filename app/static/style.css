@@ -57,6 +57,21 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 .act { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 20px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 14px; }
 .act.wa { background: #25d366; border-color: #25d366; color: #fff; font-weight: 600; }
 .act.li { color: #0a66c2; font-weight: 600; }
+.seg-label { font-size: 13px; color: var(--muted); margin: 2px 0 4px; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.seg label { margin: 0; }
+.seg input { position: absolute; opacity: 0; width: 1px; }
+.seg span { display: inline-block; padding: 6px 12px; border: 1px solid var(--line); border-radius: 20px; cursor: pointer; color: var(--text); font-size: 14px; }
+.seg input:checked + span { background: var(--accent); border-color: var(--accent); color: #fff; }
+.seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tag.t-hot { background: #ffe1e1; color: #b3261e; border-color: transparent; }
+.tag.t-warm { background: #fff1cc; color: #8a5a00; border-color: transparent; }
+.tag.t-cold { background: #dcefff; color: #0b5cad; border-color: transparent; }
+.tag.t-investor { background: #e6f6ea; color: #1d6b32; border-color: transparent; }
+@media (prefers-color-scheme: dark) {
+  .tag.t-hot { background: #4a1f1f; color: #ffb4ab; } .tag.t-warm { background: #3d3214; color: #ffd27a; }
+  .tag.t-cold { background: #15304a; color: #9ccaff; } .tag.t-investor { background: #173a22; color: #8fd9a3; }
+}
 pre { white-space: pre-wrap; font: 13px/1.4 ui-monospace, monospace; }
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }

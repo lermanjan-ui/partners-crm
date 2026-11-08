@@ -23,6 +23,16 @@ STATUSES = {
     "rejected": "Отказ",
 }
 
+# Теги: в каждой группе выбирается одно значение (или ничего).
+TAG_GROUPS = {
+    "kind": ("Тип", {"partner": "🤝 Партнёр", "investor": "💰 Инвестор"}),
+    "temp": ("Температура", {"cold": "❄️ Холодный", "warm": "🌤 Тёплый", "hot": "🔥 Горячий"}),
+    "channel": ("Откуда", {"booth": "🎪 Со стенда", "offline": "🚶 Офлайн",
+                           "ws_app": "📱 Приложение Web Summit", "wa_base": "💬 База WhatsApp"}),
+}
+# Короткие подписи для кнопок в Telegram (длинные обрезаются на телефоне)
+TAG_BUTTONS = {"ws_app": "📱 Приложение WS", "wa_base": "💬 База WhatsApp"}
+
 TEXT_FIELDS = ("full_name", "position", "company", "website", "address", "country", "about")
 LIST_FIELDS = ("phones", "emails", "socials")
 FIELD_LABELS = {
@@ -49,6 +59,9 @@ class Card(Base):
     unreadable: Mapped[list] = mapped_column(JSON, default=list)  # поля, которые OCR не уверенно прочитал
     edited_fields: Mapped[list] = mapped_column(JSON, default=list)  # поля, исправленные вручную: OCR их не трогает
     status: Mapped[str] = mapped_column(String(30), default="new")
+    kind: Mapped[str | None] = mapped_column(String(20))     # partner | investor
+    temp: Mapped[str | None] = mapped_column(String(20))     # cold | warm | hot
+    channel: Mapped[str | None] = mapped_column(String(20))  # booth | offline | ws_app | wa_base
     source: Mapped[str] = mapped_column(String(20), default="bot")  # bot | web | form (на будущее)
     ocr_status: Mapped[str] = mapped_column(String(20), default="none")  # none | processing | done | error
     ocr_error: Mapped[str | None] = mapped_column(Text)
@@ -62,6 +75,32 @@ class Card(Base):
     @property
     def code(self) -> str:
         return f"#P{self.id}"
+
+    def set_tags(self, tags: dict, by_user: bool) -> list[str]:
+        """Ставит теги. by_user=True — выбор человека (кнопка, сайт, прямые слова в заметке): перезаписывает
+        и закрепляет. Автоматика (скриншот) только заполняет пустое и не трогает то, что выбрал человек.
+        Возвращает подписи изменённых тегов."""
+        locked = set(self.edited_fields or [])
+        changed = []
+        for group, (_, values) in TAG_GROUPS.items():
+            if group not in tags:
+                continue
+            value = tags[group]
+            if value is not None and value not in values:
+                continue
+            if not by_user and (group in locked or getattr(self, group) or value is None):
+                continue
+            if getattr(self, group) != value:
+                setattr(self, group, value)
+                changed.append(values[value] if value else f"{TAG_GROUPS[group][0]}: —")
+            if by_user:
+                locked.add(group)
+        self.edited_fields = sorted(locked)
+        return changed
+
+    @property
+    def tag_labels(self) -> list[str]:
+        return [values[getattr(self, g)] for g, (_, values) in TAG_GROUPS.items() if getattr(self, g) in values]
 
     @property
     def whatsapp_numbers(self) -> list[str]:
@@ -115,6 +154,7 @@ class Note(Base):
     summary: Mapped[str | None] = mapped_column(Text)     # короткая выжимка (голосовые и длинные тексты)
     ai_status: Mapped[str] = mapped_column(String(20), default="none")  # none | processing | done | error
     ai_error: Mapped[str | None] = mapped_column(Text)
+    tags: Mapped[dict | None] = mapped_column(JSON)  # теги, названные в заметке прямо («горячий инвестор»)
     author: Mapped[str | None] = mapped_column(String(100))
     source: Mapped[str] = mapped_column(String(20), default="bot")
     attachment_id: Mapped[int | None] = mapped_column(ForeignKey("attachments.id", ondelete="SET NULL"))
@@ -165,8 +205,10 @@ def init_db(url: str) -> None:
 
 # Новые колонки для уже существующей базы (create_all добавляет только новые таблицы).
 NEW_COLUMNS = {
-    "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP", "about": "TEXT"},
-    "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT"},
+    "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP", "about": "TEXT",
+              "kind": "VARCHAR(20)", "temp": "VARCHAR(20)", "channel": "VARCHAR(20)"},
+    "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT",
+              "tags": "JSON"},
 }
 
 

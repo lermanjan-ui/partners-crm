@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from . import ai, ocr
 from .config import settings
-from .db import FIELD_LABELS, Attachment, Card, Note, SessionLocal, TgLink, now
+from .db import FIELD_LABELS, TAG_BUTTONS, TAG_GROUPS, Attachment, Card, Note, SessionLocal, TgLink, now
 from .tg import Telegram, esc
 
 log = logging.getLogger("crm")
@@ -28,7 +28,7 @@ def parse_card_id(text: str | None) -> int | None:
 
 def haystack(card: Card, notes_text: str = "") -> str:
     parts = [card.code, card.full_name, card.position, card.company, card.website, card.address, card.country,
-             card.raw_text, card.summary, card.about, notes_text, *(card.emails or []), *(card.socials or [])]
+             card.raw_text, card.summary, card.about, notes_text, *card.tag_labels, *(card.emails or []), *(card.socials or [])]
     parts += [ocr.phone_key(p) for p in card.phones or []]
     return " ".join(p for p in parts if p).lower()
 
@@ -120,8 +120,17 @@ def summary(s, card: Card) -> str:
     return "\n".join(lines)
 
 
+def tag_buttons(card: Card) -> list:
+    rows = []
+    for group, (_, values) in TAG_GROUPS.items():
+        row = [(("✅ " if getattr(card, group) == v else "") + TAG_BUTTONS.get(v, label), f"t:{card.id}:{group}:{v}")
+               for v, label in values.items()]
+        rows += [row[:2], row[2:]] if len(row) > 3 else [row]
+    return rows
+
+
 def card_buttons(card: Card):
-    rows = [[(f"💬 WhatsApp {'+' + n if len(card.whatsapp_numbers) > 1 else ''}".strip(), f"https://wa.me/{n}")]
+    rows = tag_buttons(card) + [[(f"💬 WhatsApp {'+' + n if len(card.whatsapp_numbers) > 1 else ''}".strip(), f"https://wa.me/{n}")]
             for n in card.whatsapp_numbers[:3]]
     url = card_url(card)
     if url:
@@ -227,7 +236,9 @@ def is_audio(att: Attachment | None) -> bool:
 
 
 def needs_ai(note: Note, att: Attachment | None) -> bool:
-    return is_audio(att) or len(note.text or "") >= settings.summary_min_chars
+    """Голосовые — всегда; наши тексты — всегда (теги); сообщения контакта — только длинные (выжимка)."""
+    text = note.text or ""
+    return is_audio(att) or (bool(text) and note.source != "ocr") or len(text) >= settings.summary_min_chars
 
 
 def card_info(card: Card) -> str:
@@ -251,13 +262,18 @@ def process_note(note_id: int, tg: Telegram | None = None) -> None:
         text = note.text or ""
         card = s.get(Card, note.card_id) if note.card_id else None
         ctx = card_info(card) if card else ""
-    transcript, summary, error = None, None, None
+        want_tags = note.source != "ocr"  # теги ставим только по нашим словам, не по сообщениям контакта
+    transcript, summary, tags, error = None, None, None, None
     try:
         if audio:
             transcript = ai.transcribe(data, fname, mime)
         base = "\n".join(x for x in (text, transcript) if x).strip()
-        if base and (audio or len(base) >= settings.summary_min_chars):
-            summary = ai.summarize_note(base, ctx)
+        want_summary = audio or len(base) >= settings.summary_min_chars
+        if base and (want_summary or want_tags):
+            res = ai.analyze_note(base, ctx, want_summary=want_summary)
+            summary = res.get("summary") if want_summary else None
+            if want_tags:
+                tags = {g: res.get(g) for g in TAG_GROUPS if res.get(g)}
     except Exception as e:  # noqa: BLE001 — оригинал заметки сохранён, ошибка только помечается
         log.exception("AI failed for note %s", note_id)
         error = str(e)[:500]
@@ -269,17 +285,28 @@ def process_note(note_id: int, tg: Telegram | None = None) -> None:
             note.transcript = transcript
         if summary is not None:
             note.summary = summary
+        elif not audio and len(text) < settings.summary_min_chars:
+            note.summary = None  # короткая заметка (например, после правки) — выжимка не нужна
+        note.tags = tags or None
         note.ai_status, note.ai_error = ("error", error) if error else ("done", None)
-        s.commit()
         card = s.get(Card, note.card_id) if note.card_id else None
-        if tg and note.tg_chat_id and audio:
+        changed = card.set_tags(tags, by_user=True) if card and tags else []
+        s.commit()
+        if tg and note.tg_chat_id and (audio or changed):
             try:
-                sent = tg.send(note.tg_chat_id, voice_message(card, note), reply_to=note.tg_message_id,
+                if audio:
+                    body = voice_message(card, note)
+                else:
+                    body = f"🏷 <b>{card.code}</b> {esc(card.title)}"
+                if changed:
+                    body += "\n🏷 Теги: " + ", ".join(esc(c) for c in changed)
+                sent = tg.send(note.tg_chat_id, body, reply_to=note.tg_message_id,
                                buttons=card_buttons(card) if card else None)
-                link(s, note.tg_chat_id, sent["message_id"], "note", card_id=note.card_id, note_id=note.id)
+                link(s, note.tg_chat_id, sent["message_id"], "note" if audio else "bot",
+                     card_id=note.card_id, note_id=note.id if audio else None)
                 s.commit()
             except Exception:  # noqa: BLE001
-                log.exception("cannot send transcript for note %s", note_id)
+                log.exception("cannot send result for note %s", note_id)
         card_id = note.card_id
         fill = card is not None and card.ocr_status == "from_note"
     if fill:
