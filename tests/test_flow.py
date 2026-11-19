@@ -897,3 +897,31 @@ def test_gender_from_list_import(env):
     with SessionLocal() as s:
         assert s.query(Card).filter_by(full_name="Sakine Gulec").one().gender == "female"
         assert s.query(Card).filter_by(full_name="Saeed2").one().gender is None
+
+
+def test_filter_by_added_date(env):
+    from app import work
+    client, _ = env
+    t = work.today()
+    noon = lambda d: datetime(d.year, d.month, d.day, 12, 0, tzinfo=work.TZ)  # noqa: E731
+    with SessionLocal() as s:
+        s.add_all([Card(full_name="Добавлен сегодня", created_at=noon(t)),
+                   Card(full_name="Добавлен вчера", created_at=noon(t - timedelta(days=1))),
+                   Card(full_name="Добавлен месяц назад", created_at=noon(t - timedelta(days=40)), ball="us")])
+        s.commit()
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get("/?period=today").text
+    assert "Добавлен сегодня" in page and "Добавлен вчера" not in page
+    page = client.get("/?period=yesterday").text
+    assert "Добавлен вчера" in page and "Добавлен сегодня" not in page
+    page = client.get("/?period=7d").text
+    assert "Добавлен вчера" in page and "Добавлен месяц назад" not in page
+    d40 = (t - timedelta(days=41)).isoformat()
+    d39 = (t - timedelta(days=39)).isoformat()
+    page = client.get(f"/?date_from={d40}&date_to={d39}").text
+    assert "Добавлен месяц назад" in page and "Добавлен вчера" not in page and f'value="{d40}"' in page
+    assert "Добавлен месяц назад" not in client.get("/work?period=30d").text
+    assert "Добавлен месяц назад" in client.get(f"/work?date_from={d40}").text
+    with SessionLocal() as s:
+        cid = s.query(Card).filter_by(full_name="Добавлен вчера").one().id
+    assert "📅 Добавлен <b>" in client.get(f"/c/{cid}").text

@@ -94,6 +94,12 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 .witem .acts form { margin: 0; } .witem .acts button { font-size: 13px; padding: 4px 10px; margin: 0; }
 .red { color: #c62828; font-weight: 600; }
 @media (max-width: 900px) { .board { grid-template-columns: 1fr; } }
+.datebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex-basis: 100%; }
+.datebar label { margin: 0; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.datebar input[type=date] { width: auto; padding: 5px 8px; }
+.chip { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 20px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.added { margin: 2px 0 10px; }
 pre { white-space: pre-wrap; font: 13px/1.4 ui-monospace, monospace; }
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }

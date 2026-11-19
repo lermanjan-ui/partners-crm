@@ -2,7 +2,7 @@
 import csv
 import hmac
 import io
-from datetime import timezone
+from datetime import timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -74,6 +74,29 @@ def authors(s) -> list[str]:
     return sorted({a for (a,) in s.execute(select(Card.created_by).distinct()) if a}, key=str.lower)
 
 
+PERIODS = {"today": ("Сегодня", 0, 0), "yesterday": ("Вчера", 1, 1), "7d": ("7 дней", 6, 0), "30d": ("30 дней", 29, 0)}
+
+
+def date_range(period: str, date_from: str, date_to: str) -> tuple:
+    """Период добавления: быстрая кнопка или «с — по» (даты по местному времени, включительно)."""
+    if period in PERIODS:
+        t = work.today()
+        _, back_from, back_to = PERIODS[period]
+        return t - timedelta(days=back_from), t - timedelta(days=back_to)
+    return work.parse_due(date_from), work.parse_due(date_to)
+
+
+templates.env.globals["PERIODS"] = {k: v[0] for k, v in PERIODS.items()}
+
+
+def by_added(cards: list, start, end) -> list:
+    if start:
+        cards = [c for c in cards if work.local_date(c.created_at) >= start]
+    if end:
+        cards = [c for c in cards if work.local_date(c.created_at) <= end]
+    return cards
+
+
 def by_author(cards: list, author: str) -> list:
     if author == "none":
         return [c for c in cards if not c.created_by]
@@ -82,7 +105,8 @@ def by_author(cards: list, author: str) -> list:
 
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = "",
-          batch: str = "", author: str = "", gender: str = ""):
+          batch: str = "", author: str = "", gender: str = "", period: str = "", date_from: str = "",
+          date_to: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with SessionLocal() as s:
@@ -92,6 +116,8 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
         if batch:
             cards = [c for c in cards if c.batch == batch]
         cards = by_author(cards, author)
+        start, end = date_range(period, date_from, date_to)
+        cards = by_added(cards, start, end)
         if gender:
             cards = [c for c in cards if (c.gender or "none") == gender]
         all_authors = authors(s)
@@ -104,11 +130,13 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
         thumbs = dict(s.execute(select(Attachment.card_id, func.min(Attachment.id))
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
     return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs,
-                  batch=batch, author=author, authors=all_authors, gender=gender)
+                  batch=batch, author=author, authors=all_authors, gender=gender, period=period,
+                  date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "")
 
 
 @router.get("/work", response_class=HTMLResponse)
-def work_page(request: Request, kind: str = "", temp: str = "", channel: str = "", author: str = ""):
+def work_page(request: Request, kind: str = "", temp: str = "", channel: str = "", author: str = "", period: str = "",
+              date_from: str = "", date_to: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with crm.LOCK, SessionLocal() as s:
@@ -116,12 +144,14 @@ def work_page(request: Request, kind: str = "", temp: str = "", channel: str = "
             s.commit()
         data = work.todo(s)
         all_authors = authors(s)
+    start, end = date_range(period, date_from, date_to)
     for key in ("overdue", "due_today", "later", "waiting", "none", "untriaged"):
-        data[key] = by_author(data[key], author)
+        data[key] = by_added(by_author(data[key], author), start, end)
         for group, value in tags.items():
             if value:
                 data[key] = [c for c in data[key] if (getattr(c, group) or "none") == value]
-    return render(request, "work.html", d=data, tags=tags, today=data["today"], author=author, authors=all_authors)
+    return render(request, "work.html", d=data, tags=tags, today=data["today"], author=author, authors=all_authors,
+                  period=period, date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "")
 
 
 def _back(request: Request, default: str) -> str:

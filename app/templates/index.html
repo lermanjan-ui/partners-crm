@@ -24,6 +24,13 @@
   </select>
   {% if batch %}<input type="hidden" name="batch" value="{{ batch }}">{% endif %}
   <button class="btn">Найти</button>
+<div class="datebar">
+  <span class="muted small">Добавлены:</span>
+  {% for k, label in PERIODS.items() %}<button class="chip {% if period == k %}on{% endif %}" name="period" value="{{ k }}">{{ label }}</button>{% endfor %}
+  <label class="small">с <input type="date" name="date_from" value="{{ date_from }}" onchange="this.form.submit()"></label>
+  <label class="small">по <input type="date" name="date_to" value="{{ date_to }}" onchange="this.form.submit()"></label>
+  {% if period or date_from or date_to %}<a class="small" href="?{% for k in ['q','status','kind','temp','channel','author','gender','batch'] %}{% if request.query_params.get(k) %}{{ k }}={{ request.query_params.get(k)|urlencode }}&{% endif %}{% endfor %}">× сбросить даты</a>{% endif %}
+</div>
 </form>
 {% if batch %}
 <div class="panel batchbar">
