@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import bot, crm
+from . import bot, crm, work
 from .config import settings
 from .db import Attachment, Card, Note, SessionLocal, init_db
 from .tg import Telegram
@@ -41,6 +41,8 @@ def _login_required(request: Request, exc: LoginRequired):
 
 def startup() -> None:
     init_db(settings.database_url)
+    if tg and settings.work_loop:
+        work.start_loop(tg, crm.LOCK)  # дожим «ждём их» и утренняя сводка
     if tg and settings.public_url.startswith("https://"):
         try:
             tg.set_webhook(f"{settings.public_url}/tg/webhook", settings.webhook_secret)

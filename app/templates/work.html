@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Работа{% endblock %}
+{% macro item(c, mode) %}
+  <div class="witem {% if c.due and c.ball == 'us' and c.due < today %}overdue{% endif %}">
+    <a class="t" href="/c/{{ c.id }}">{{ c.title }}</a> <span class="muted">{{ c.code }}</span>
+    {% for g in ('temp', 'kind') %}{% if c[g] %}<span class="tag t-{{ c[g] }}">{{ TAG_GROUPS[g][1][c[g]] }}</span>{% endif %}{% endfor %}
+    {% if c.company and c.company != c.title %}<div class="muted small">{{ c.company }}</div>{% endif %}
+    {% if c.next_step %}<div class="step">🎯 {{ c.next_step }}</div>{% endif %}
+    {% if mode == 'us' and c.due %}<div class="small {% if c.due < today %}red{% endif %}">📅 {% if c.due < today %}просрочено {{ (today - c.due).days }} дн. ({{ fmt_due(c.due, today) }}){% else %}{{ fmt_due(c.due, today) }}{% endif %}</div>{% endif %}
+    {% if mode == 'them' and followup_date(c) %}<div class="small muted">⏳ вернётся к нам {{ fmt_due(followup_date(c), today) }}</div>{% endif %}
+    <div class="acts">
+      {% if mode == 'us' %}
+        <form method="post" action="/c/{{ c.id }}/work"><input type="hidden" name="action" value="done"><input type="hidden" name="then" value="them"><button class="btn ghost">☑️ Сделано → ждём</button></form>
+        <form method="post" action="/c/{{ c.id }}/work"><input type="hidden" name="ball" value="none"><button class="btn ghost">⚪ Без шага</button></form>
+      {% elif mode == 'them' %}
+        <form method="post" action="/c/{{ c.id }}/work"><input type="hidden" name="ball" value="us"><button class="btn ghost">💬 Ответили → наш ход</button></form>
+      {% else %}
+        <form method="post" action="/c/{{ c.id }}/work"><input type="hidden" name="ball" value="us"><button class="btn ghost">🟢 Наш ход</button></form>
+        <form method="post" action="/c/{{ c.id }}/work"><input type="hidden" name="ball" value="none"><button class="btn ghost">⚪ Без шага</button></form>
+      {% endif %}
+    </div>
+  </div>
+{% endmacro %}
+{% block content %}
+<form class="filters" method="get">
+  {% for g, (title, values) in TAG_GROUPS.items() %}
+  <select name="{{ g }}" onchange="this.form.submit()">
+    <option value="">{{ title }}: все</option>
+    {% for k, v in values.items() %}<option value="{{ k }}" {% if tags[g] == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
+  </select>
+  {% endfor %}
+</form>
+{% set us = d.overdue + d.due_today + d.later %}
+<div class="board">
+  <section class="col">
+    <h2>🟢 Наш ход · {{ us|length }}{% if d.overdue %} <span class="red">(🔴 {{ d.overdue|length }})</span>{% endif %}</h2>
+    {% for c in us %}{{ item(c, 'us') }}{% else %}<p class="muted">Нет дел — отлично.</p>{% endfor %}
+  </section>
+  <section class="col">
+    <h2>🟡 Ждём их · {{ d.waiting|length }}</h2>
+    {% for c in d.waiting %}{{ item(c, 'them') }}{% else %}<p class="muted">Никого не ждём.</p>{% endfor %}
+  </section>
+  <section class="col">
+    <h2>📥 Не разобраны · {{ d.untriaged|length }}</h2>
+    {% for c in d.untriaged[:60] %}{{ item(c, 'new') }}{% else %}<p class="muted">Все контакты разобраны.</p>{% endfor %}
+    {% if d.untriaged|length > 60 %}<p class="muted">…и ещё {{ d.untriaged|length - 60 }} — фильтры выше помогут.</p>{% endif %}
+    {% if d.none %}<details class="panel"><summary>⚪ Без шага · {{ d.none|length }}</summary>
+      {% for c in d.none %}<div><a href="/c/{{ c.id }}">{{ c.code }} {{ c.title }}</a></div>{% endfor %}
+    </details>{% endif %}
+  </section>
+</div>
+{% endblock %}

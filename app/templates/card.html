@@ -18,6 +18,24 @@
   {% if card.linkedin_url %}<a class="act li" href="{{ card.linkedin_url }}" target="_blank" rel="noopener">in LinkedIn{% if 'search' in card.linkedin_url %} (поиск){% endif %}</a>{% endif %}
 </div>
 
+<form method="post" action="/c/{{ card.id }}/work" class="panel workbox">
+  <div class="seg">
+    {% for b, label in BALLS.items() %}<label><input type="radio" name="ball" value="{{ b }}" {% if card.ball == b %}checked{% endif %}><span class="b-{{ b }}">{{ label }}</span></label>{% endfor %}
+    {% if not card.ball %}<span class="tag">{{ UNTRIAGED }}</span>{% endif %}
+  </div>
+  <div class="workrow">
+    <label class="grow">Следующий шаг<input name="next_step" value="{{ card.next_step or '' }}" placeholder="Что сделать: прислать КП, созвон…"></label>
+    <label>Срок<input type="date" name="due" value="{{ card.due.isoformat() if card.due else '' }}"></label>
+    <button class="btn">Сохранить</button>
+  </div>
+  {% if card.ball == 'them' and followup_date(card) %}<div class="muted small">⏳ Ждём ответа — если не ответят, мяч вернётся к нам {{ fmt_due(followup_date(card)) }}.</div>{% endif %}
+</form>
+<div class="workactions">
+  {% if card.next_step %}<form method="post" action="/c/{{ card.id }}/work"><input type="hidden" name="action" value="done"><input type="hidden" name="then" value="them"><button class="btn ghost">☑️ Шаг сделан → ждём их</button></form>{% endif %}
+  <form method="post" action="/c/{{ card.id }}/work" class="touchform"><input type="hidden" name="action" value="touch">
+    <input name="touch" placeholder="📌 Касание: написали в WhatsApp, созвонились…"><button class="btn ghost">Отметить</button></form>
+</div>
+
 {% if card.summary or notes or card.about %}
 <div class="panel summary">
   <div class="summary-head">
@@ -78,8 +96,9 @@
   </form>
   <h2>История</h2>
   {% for n in notes %}
-    <div class="note">
+    <div class="note {{ 'n-' ~ n.kind }}">
       <div class="muted small">{{ n.author or '—' }} · {{ n.created_at|dt('%d.%m.%Y %H:%M') }} · {{ {'bot': 'Telegram', 'ocr': 'со скриншота'}.get(n.source, 'CRM') }}{% if n.edited_at %} · изменено{% endif %}</div>
+      {% if n.kind == 'touch' and n.touch %}<div class="touchline">📌 {{ n.touch }}</div>{% endif %}
       {% if n.summary %}
         <div class="text sum">{{ n.summary }}</div>
         {% if n.text %}<details class="small"><summary>Полный текст</summary><div class="text">{{ n.text }}</div></details>{% endif %}

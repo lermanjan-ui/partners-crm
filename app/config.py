@@ -35,6 +35,10 @@ class Settings:
         self.transcribe_fallback = os.getenv("OPENAI_TRANSCRIBE_FALLBACK", "whisper-1")
         # Текстовые заметки длиннее этого получают короткую выжимку
         self.summary_min_chars = int(os.getenv("SUMMARY_MIN_CHARS", "300"))
+        # Обработка контактов: через сколько дней без ответа мяч возвращается к нам; час утренней сводки (пн–пт)
+        self.followup_days = int(os.getenv("FOLLOWUP_DAYS", "2"))
+        self.digest_hour = int(os.getenv("DIGEST_HOUR", "9"))
+        self.work_loop = os.getenv("WORK_LOOP", "1") != "0"  # в тестах выключается
 
 
 settings = Settings()

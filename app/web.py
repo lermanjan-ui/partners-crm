@@ -11,14 +11,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response, Streamin
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
-from . import crm
+from . import crm, work
 from .config import settings
-from .db import (FIELD_LABELS, LIST_FIELDS, STATUSES, TAG_GROUPS, TEXT_FIELDS, Attachment, Card, Note, SessionLocal,
+from .db import (BALLS, FIELD_LABELS, LIST_FIELDS, STATUSES, TAG_GROUPS, TEXT_FIELDS, UNTRIAGED, Attachment, Card, Note, SessionLocal,
                  now)
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-templates.env.globals.update(STATUSES=STATUSES, FIELD_LABELS=FIELD_LABELS, TAG_GROUPS=TAG_GROUPS)
+templates.env.globals.update(STATUSES=STATUSES, FIELD_LABELS=FIELD_LABELS, TAG_GROUPS=TAG_GROUPS, BALLS=BALLS,
+                             UNTRIAGED=UNTRIAGED, fmt_due=work.fmt_due, followup_date=work.followup_date)
 TZ = ZoneInfo(settings.timezone)
 
 
@@ -89,6 +90,63 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
     return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs,
                   batch=batch)
+
+
+@router.get("/work", response_class=HTMLResponse)
+def work_page(request: Request, kind: str = "", temp: str = "", channel: str = ""):
+    user_of(request)
+    tags = {"kind": kind, "temp": temp, "channel": channel}
+    with crm.LOCK, SessionLocal() as s:
+        if work.expire_waiting(s):
+            s.commit()
+        data = work.todo(s)
+    for key in ("overdue", "due_today", "later", "waiting", "none", "untriaged"):
+        for group, value in tags.items():
+            if value:
+                data[key] = [c for c in data[key] if (getattr(c, group) or "none") == value]
+    return render(request, "work.html", d=data, tags=tags, today=data["today"])
+
+
+def _back(request: Request, default: str) -> str:
+    ref = request.headers.get("referer") or ""
+    path = ref.split("://", 1)[-1].split("/", 1)[-1] if "://" in ref else ""
+    return "/" + path if path.startswith(("work", "c/")) else default
+
+
+@router.post("/c/{card_id}/work")
+async def save_work(request: Request, card_id: int):
+    """Мяч, шаг, срок — из карточки на сайте; «done» — шаг выполнен; быстрые кнопки со страницы «Работа»."""
+    user = user_of(request)
+    form = await request.form()
+    with crm.LOCK, SessionLocal() as s:
+        card = s.get(Card, card_id)
+        if card is None:
+            raise HTTPException(404)
+        action = form.get("action")
+        if action == "done":
+            work.step_done(s, card, user, source="web")
+            work.set_ball(card, form.get("then") or "them")
+        elif action == "touch":
+            text = (form.get("touch") or "").strip()
+            if text:
+                work.log_touch(s, card, text, user, source="web")
+        else:
+            prev_ball, prev_due = card.ball, card.due
+            if "ball" in form:
+                work.set_ball(card, form.get("ball") or None)
+            if "next_step" in form:
+                card.next_step = (form.get("next_step") or "").strip() or None
+            if "due" in form:
+                due = work.parse_due(form.get("due"))
+                # переключили на «ждём их», а срок в форме остался прежним (нашим) — не переносим его
+                if not (card.ball == "them" and prev_ball != "them" and due == prev_due):
+                    card.due = due
+            if card.next_step and card.ball in (None, "none") and "ball" not in form:
+                work.set_ball(card, "us")
+        card.updated_at = now()
+        s.commit()
+    crm.schedule_card_summary(card_id)
+    return RedirectResponse(_back(request, f"/c/{card_id}"), 303)
 
 
 @router.get("/c/new", response_class=HTMLResponse)

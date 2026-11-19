@@ -10,9 +10,9 @@ from datetime import timedelta, timezone
 
 from sqlalchemy import delete, select, update
 
-from . import crm
+from . import ai, crm, work
 from .config import settings
-from .db import TAG_GROUPS, Attachment, Card, ChatMode, MediaGroup, Note, ProcessedUpdate, TgLink, now
+from .db import BALLS, TAG_GROUPS, Attachment, Card, ChatMode, MediaGroup, Note, ProcessedUpdate, TgLink, now
 from .tg import Telegram, esc
 
 log = logging.getLogger("bot")
@@ -31,6 +31,9 @@ HELP = """<b>Как пользоваться</b>
 
 📋 <b>Список участников</b> (скрин группы WhatsApp, Telegram, приложения) — сначала /list, потом скриншоты: каждый человек станет отдельным контактом.
 
+⚽ <b>Работа с контактом</b> — под карточкой: 🟢 Наш ход / 🟡 Ждём их / ⚪ Без шага, «☑️ Шаг сделан», «🎯 Новый шаг», «📅 Срок». Проще голосом ответом на карточку: «отправил презентацию, жду ответа до пятницы» — бот сам отметит касание, мяч и срок. Если ответа нет 2 дня — мяч вернётся к вам. Сводка — в 9:00 по будням.
+
+/todo — что сделать сейчас
 /new Имя или компания — контакт без визитки
 /list — режим списка участников, /done — выключить"""
 
@@ -106,6 +109,10 @@ def on_message(s, tg: Telegram, msg: dict) -> list[tuple]:
     who = author_name(user)
     text = (msg.get("text") or msg.get("caption") or "").strip()
     card, reply_link = resolve_reply(s, chat_id, msg.get("reply_to_message"))
+
+    # Ответ на просьбу «напишите следующий шаг».
+    if reply_link and reply_link.kind == "step" and reply_link.card_id and msg.get("text"):
+        return on_step_text(s, tg, chat_id, mid, reply_link.card_id, text)
 
     # Ответ на «К кому это?» / на просьбу ввести поиск — это поисковый запрос.
     if reply_link and reply_link.kind in ("ask", "search") and reply_link.note_id and msg.get("text"):
@@ -227,6 +234,25 @@ def add_note(s, tg, msg, who, card, text, file) -> list[tuple]:
     return [("card", card.id)] if card else []
 
 
+def on_step_text(s, tg, chat_id, mid, card_id, text) -> list[tuple]:
+    card = s.get(Card, card_id)
+    if card is None:
+        return []
+    try:
+        parsed = ai.parse_step(text)
+    except Exception:  # noqa: BLE001 — без ИИ просто берём текст как шаг
+        log.exception("parse_step failed")
+        parsed = {"next_step": text, "due": None}
+    card.next_step = (parsed.get("next_step") or text).strip()[:500]
+    card.due = work.parse_due(parsed.get("due"))
+    work.set_ball(card, "us")
+    card.updated_at = now()
+    sent = tg.send(chat_id, f"🎯 <b>{card.code}</b> {esc(card.title)}\n{work.work_line(card)}", reply_to=mid,
+                   buttons=crm.card_buttons(card))
+    crm.link(s, chat_id, sent["message_id"], "bot", card_id=card.id)
+    return [("card", card.id)]
+
+
 def show_choices(s, tg, chat_id, note_id, reply_to=None, query=None, edit_message_id=None):
     note = s.get(Note, note_id)
     if note is None or note.card_id:
@@ -283,6 +309,12 @@ def on_command(s, tg, chat_id, mid, text, who) -> list[tuple]:
         if mode is not None:
             s.delete(mode)
         tg.send(chat_id, "✅ Режим списка выключен. Фото снова считаются визитками.")
+    elif cmd == "/todo":
+        with_expired = work.expire_waiting(s)
+        text, buttons = work.todo_message(work.todo(s))
+        if with_expired:
+            text += f"\n\n⏰ Только что вернулись к нам (нет ответа): {len(with_expired)}"
+        tg.send(chat_id, text, buttons=buttons)
     elif cmd == "/last":
         cards = crm.recent(s, limit=10)
         if not cards:
@@ -329,6 +361,68 @@ def on_edit(s, tg, msg: dict) -> list[tuple]:
 
 # ---------- кнопки ----------
 
+DUE_CHOICES = [("Сегодня", 0), ("Завтра", 1), ("+3 дня", 3), ("+неделя", 7)]
+
+
+def on_work_callback(s, tg, cq, kind, args, chat_id, mid, who) -> list[tuple]:
+    card = s.get(Card, int(args[0])) if args and args[0].isdigit() else None
+    if card is None:
+        tg.answer_callback(cq["id"], "Не найдено")
+        return []
+    head = f"<b>{card.code}</b> {esc(card.title)}"
+    if kind == "w":  # кто действует
+        ball = args[1] if len(args) > 1 else None
+        if ball not in BALLS:
+            tg.answer_callback(cq["id"])
+            return []
+        work.set_ball(card, ball)
+        card.updated_at = now()
+        try:
+            tg.edit_buttons(chat_id, mid, crm.card_buttons(card))
+        except Exception:  # noqa: BLE001
+            log.exception("cannot update buttons")
+        hint = ""
+        if ball == "them":
+            hint = f" — вернётся к нам {work.fmt_due(work.followup_date(card))}, если не ответят"
+        tg.answer_callback(cq["id"], BALLS[ball] + hint)
+        return []
+    if kind == "wd":  # шаг сделан → касание, затем «что дальше?»
+        done = card.next_step or "шаг"
+        work.step_done(s, card, who)
+        tg.answer_callback(cq["id"], "Отмечено")
+        sent = tg.send(chat_id, f"☑️ {head}: сделано — {esc(done)}.\n<b>Что дальше?</b>",
+                       buttons=[[("🟡 Ждём их ответ", f"w:{card.id}:them"), ("🎯 Новый шаг наш", f"wn:{card.id}")],
+                                [("⚪ Без шага", f"w:{card.id}:none")]])
+        crm.link(s, chat_id, sent["message_id"], "bot", card_id=card.id)
+        return [("card", card.id)]
+    if kind == "wn":  # попросить текст следующего шага
+        tg.answer_callback(cq["id"])
+        sent = tg.send(chat_id, f"🎯 Следующий шаг для {head} — можно со сроком, например «созвон в пятницу»:",
+                       force_reply=True, placeholder="Что сделать и когда")
+        crm.link(s, chat_id, sent["message_id"], "step", card_id=card.id)
+        return []
+    if kind == "wt":  # выбрать срок
+        tg.answer_callback(cq["id"])
+        rows = [[(label, f"wdue:{card.id}:{d}") for label, d in DUE_CHOICES[:2]],
+                [(label, f"wdue:{card.id}:{d}") for label, d in DUE_CHOICES[2:]],
+                [("Без срока", f"wdue:{card.id}:x")]]
+        step = f" «{esc(card.next_step)}»" if card.next_step else ""
+        tg.send(chat_id, f"📅 Срок для {head}{step}:", buttons=rows)
+        return []
+    if kind == "wdue":
+        value = args[1] if len(args) > 1 else "x"
+        card.due = None if value == "x" else work.today() + timedelta(days=int(value))
+        if card.ball in (None, "none") and card.due:
+            work.set_ball(card, "us")
+        card.updated_at = now()
+        tg.edit(chat_id, mid, f"📅 {head}: " + (f"срок — {work.fmt_due(card.due)}" if card.due else "без срока"),
+                crm.work_buttons(card))
+        crm.link(s, chat_id, mid, "bot", card_id=card.id)
+        tg.answer_callback(cq["id"], "Срок сохранён")
+        return []
+    return []
+
+
 def assign_note(s, note: Note, card: Card) -> list[str]:
     """Привязать заметку к контакту; теги, названные в заметке, переходят на контакт. Возвращает изменённые теги."""
     note.card_id = card.id
@@ -336,7 +430,12 @@ def assign_note(s, note: Note, card: Card) -> list[str]:
         s.execute(update(Attachment).where(Attachment.id == note.attachment_id).values(card_id=card.id))
     s.execute(update(TgLink).where(TgLink.note_id == note.id).values(card_id=card.id))
     card.updated_at = now()
-    return card.set_tags(note.tags, by_user=True) if note.tags else []
+    if not note.tags:
+        return []
+    changed = card.set_tags(note.tags, by_user=True)
+    if note.tags.get("work"):
+        changed += work.apply_work(card, note.tags["work"])
+    return changed
 
 
 def on_callback(s, tg, cq: dict) -> list[tuple]:
@@ -396,6 +495,8 @@ def on_callback(s, tg, cq: dict) -> list[tuple]:
             log.exception("cannot update buttons")
         tg.answer_callback(cq["id"], TAG_GROUPS[group][1][value] if new else "Тег снят")
         return []
+    elif kind in ("w", "wd", "wn", "wt", "wdue"):
+        return on_work_callback(s, tg, cq, kind, args, chat_id, mid, author_name(user))
     elif kind == "ld":  # выключить режим списка
         mode = s.get(ChatMode, chat_id)
         if mode is not None:

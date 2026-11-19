@@ -2,7 +2,9 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from sqlalchemy import (JSON, BigInteger, DateTime, ForeignKey, Integer, LargeBinary, String, Text,
+from datetime import date
+
+from sqlalchemy import (JSON, BigInteger, Date, DateTime, ForeignKey, Integer, LargeBinary, String, Text,
                         create_engine)
 from sqlalchemy.orm import DeclarativeBase, Mapped, deferred, mapped_column, sessionmaker
 
@@ -33,6 +35,10 @@ TAG_GROUPS = {
 # Короткие подписи для кнопок в Telegram (длинные обрезаются на телефоне)
 TAG_BUTTONS = {"ws_app": "📱 Приложение WS", "wa_base": "💬 База WhatsApp"}
 
+# «Мяч»: кто действует следующим. None — контакт ещё не разобран.
+BALLS = {"us": "🟢 Наш ход", "them": "🟡 Ждём их", "none": "⚪ Без шага"}
+UNTRIAGED = "📥 Не разобран"
+
 TEXT_FIELDS = ("full_name", "position", "company", "website", "address", "country", "about")
 LIST_FIELDS = ("phones", "emails", "socials")
 FIELD_LABELS = {
@@ -59,6 +65,10 @@ class Card(Base):
     unreadable: Mapped[list] = mapped_column(JSON, default=list)  # поля, которые OCR не уверенно прочитал
     edited_fields: Mapped[list] = mapped_column(JSON, default=list)  # поля, исправленные вручную: OCR их не трогает
     status: Mapped[str] = mapped_column(String(30), default="new")
+    ball: Mapped[str | None] = mapped_column(String(10), index=True)  # us | them | none; None — не разобран
+    next_step: Mapped[str | None] = mapped_column(Text)
+    due: Mapped[date | None] = mapped_column(Date)
+    waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # с какого момента ждём их
     kind: Mapped[str | None] = mapped_column(String(20))     # partner | investor
     temp: Mapped[str | None] = mapped_column(String(20))     # cold | warm | hot
     channel: Mapped[str | None] = mapped_column(String(20))  # booth | offline | ws_app | wa_base
@@ -158,6 +168,8 @@ class Note(Base):
     tags: Mapped[dict | None] = mapped_column(JSON)  # теги, названные в заметке прямо («горячий инвестор»)
     author: Mapped[str | None] = mapped_column(String(100))
     source: Mapped[str] = mapped_column(String(20), default="bot")
+    kind: Mapped[str] = mapped_column(String(20), default="note")  # note | touch (касание) | system
+    touch: Mapped[str | None] = mapped_column(Text)  # что сделано: «отправили презентацию»
     attachment_id: Mapped[int | None] = mapped_column(ForeignKey("attachments.id", ondelete="SET NULL"))
     tg_chat_id: Mapped[int | None] = mapped_column(BigInteger)
     tg_message_id: Mapped[int | None] = mapped_column(BigInteger)
@@ -180,6 +192,13 @@ class ProcessedUpdate(Base):
     __tablename__ = "tg_updates"
     update_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AppState(Base):
+    """Служебные значения (например, дата последней утренней сводки)."""
+    __tablename__ = "app_state"
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
 
 
 class ChatMode(Base):
@@ -215,9 +234,10 @@ def init_db(url: str) -> None:
 # Новые колонки для уже существующей базы (create_all добавляет только новые таблицы).
 NEW_COLUMNS = {
     "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP", "about": "TEXT",
-              "kind": "VARCHAR(20)", "temp": "VARCHAR(20)", "channel": "VARCHAR(20)", "batch": "VARCHAR(40)"},
+              "kind": "VARCHAR(20)", "temp": "VARCHAR(20)", "channel": "VARCHAR(20)", "batch": "VARCHAR(40)",
+              "ball": "VARCHAR(10)", "next_step": "TEXT", "due": "DATE", "waiting_since": "TIMESTAMP"},
     "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT",
-              "tags": "JSON"},
+              "tags": "JSON", "kind": "VARCHAR(20) DEFAULT 'note'", "touch": "TEXT"},
 }
 
 

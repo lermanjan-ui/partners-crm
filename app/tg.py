@@ -85,6 +85,7 @@ class Telegram:
                   allowed_updates=["message", "edited_message", "callback_query"])
         self.call("setMyCommands", commands=[
             {"command": "find", "description": "Найти контакт: /find имя, компания, телефон"},
+            {"command": "todo", "description": "Что сделать сейчас: наш ход, просрочено, ждём ответа"},
             {"command": "last", "description": "Последние визитки"},
             {"command": "new", "description": "Создать контакт без визитки: /new Имя"},
             {"command": "list", "description": "Скриншоты списка участников группы → много контактов"},

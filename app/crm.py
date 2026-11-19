@@ -7,9 +7,9 @@ import time
 
 from sqlalchemy import select
 
-from . import ai, ocr
+from . import ai, ocr, work
 from .config import settings
-from .db import FIELD_LABELS, TAG_BUTTONS, TAG_GROUPS, Attachment, Card, Note, SessionLocal, TgLink, now
+from .db import BALLS, FIELD_LABELS, TAG_BUTTONS, TAG_GROUPS, Attachment, Card, Note, SessionLocal, TgLink, now
 from .tg import Telegram, esc
 
 log = logging.getLogger("crm")
@@ -28,7 +28,7 @@ def parse_card_id(text: str | None) -> int | None:
 
 def haystack(card: Card, notes_text: str = "") -> str:
     parts = [card.code, card.full_name, card.position, card.company, card.website, card.address, card.country,
-             card.raw_text, card.summary, card.about, notes_text, *card.tag_labels, *(card.emails or []), *(card.socials or [])]
+             card.raw_text, card.summary, card.about, card.next_step, notes_text, *card.tag_labels, *(card.emails or []), *(card.socials or [])]
     parts += [ocr.phone_key(p) for p in card.phones or []]
     return " ".join(p for p in parts if p).lower()
 
@@ -107,6 +107,9 @@ def summary(s, card: Card) -> str:
         lines.append("⚠️ Не удалось заполнить автоматически — данные можно внести в CRM.")
     elif card.ocr_status == "done" and not (card.full_name or card.company or card.phones or card.emails):
         lines.append("⚠️ Контакты не найдены — фото сохранено.")
+    wl = work.work_line(card)
+    if wl:
+        lines.append(wl)
     if card.about and not card.summary:
         about = card.about if len(card.about) <= 400 else card.about[:400] + "…"
         lines.append(f"ℹ️ {esc(about)}")
@@ -129,8 +132,14 @@ def tag_buttons(card: Card) -> list:
     return rows
 
 
+def work_buttons(card: Card) -> list:
+    """Кто действует (одно значение) + «шаг сделан» и срок."""
+    return [[(("✅ " if card.ball == b else "") + label, f"w:{card.id}:{b}") for b, label in BALLS.items()],
+            [("☑️ Шаг сделан", f"wd:{card.id}"), ("🎯 Новый шаг", f"wn:{card.id}"), ("📅 Срок", f"wt:{card.id}")]]
+
+
 def card_buttons(card: Card):
-    rows = tag_buttons(card) + [[(f"💬 WhatsApp {'+' + n if len(card.whatsapp_numbers) > 1 else ''}".strip(), f"https://wa.me/{n}")]
+    rows = work_buttons(card) + tag_buttons(card) + [[(f"💬 WhatsApp {'+' + n if len(card.whatsapp_numbers) > 1 else ''}".strip(), f"https://wa.me/{n}")]
             for n in card.whatsapp_numbers[:3]]
     url = card_url(card)
     if url:
@@ -274,6 +283,9 @@ def process_note(note_id: int, tg: Telegram | None = None) -> None:
             summary = res.get("summary") if want_summary else None
             if want_tags:
                 tags = {g: res.get(g) for g in TAG_GROUPS if res.get(g)}
+                w = {k: res.get(k) for k in ("touch", "ball", "next_step", "due") if res.get(k)}
+                if w:
+                    tags["work"] = w
     except Exception as e:  # noqa: BLE001 — оригинал заметки сохранён, ошибка только помечается
         log.exception("AI failed for note %s", note_id)
         error = str(e)[:500]
@@ -289,17 +301,23 @@ def process_note(note_id: int, tg: Telegram | None = None) -> None:
             note.summary = None  # короткая заметка (например, после правки) — выжимка не нужна
         note.tags = tags or None
         note.ai_status, note.ai_error = ("error", error) if error else ("done", None)
+        if tags and tags.get("work", {}).get("touch"):
+            note.kind, note.touch = "touch", tags["work"]["touch"]
         card = s.get(Card, note.card_id) if note.card_id else None
-        changed = card.set_tags(tags, by_user=True) if card and tags else []
+        changed = [f"🏷 {c}" for c in card.set_tags(tags, by_user=True)] if card and tags else []
+        if card and tags:
+            changed += work.apply_work(card, tags.get("work"))
+            if note.touch:
+                changed.insert(0, f"📌 Касание: {esc(note.touch)}")
         s.commit()
         if tg and note.tg_chat_id and (audio or changed):
             try:
                 if audio:
                     body = voice_message(card, note)
                 else:
-                    body = f"🏷 <b>{card.code}</b> {esc(card.title)}"
+                    body = f"📝 <b>{card.code}</b> {esc(card.title)}"
                 if changed:
-                    body += "\n🏷 Теги: " + ", ".join(esc(c) for c in changed)
+                    body += "\n" + "\n".join(changed)
                 sent = tg.send(note.tg_chat_id, body, reply_to=note.tg_message_id,
                                buttons=card_buttons(card) if card else None)
                 link(s, note.tg_chat_id, sent["message_id"], "note" if audio else "bot",

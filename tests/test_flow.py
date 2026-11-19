@@ -2,12 +2,14 @@
 import io
 import os
 import tempfile
+from datetime import datetime, timedelta
 
 os.environ["DATABASE_URL"] = os.getenv("TEST_DATABASE_URL") or "sqlite:///" + os.path.join(tempfile.mkdtemp(), "t.db")
 os.environ["TELEGRAM_BOT_TOKEN"] = "x"
 os.environ["TELEGRAM_ALLOWED_IDS"] = "1,2"
 os.environ["WEB_USERS"] = "anna:pw"
 os.environ["OPENAI_API_KEY"] = "k"
+os.environ["WORK_LOOP"] = "0"  # фоновый цикл сводки в тестах не запускаем — проверяем work.tick напрямую
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -70,7 +72,13 @@ def fake_analyze(text, ctx="", want_summary=True):
     tags = {"kind": "investor" if "инвестор" in low else ("partner" if "партн" in low else None),
             "temp": "hot" if "горяч" in low else ("cold" if "холодн" in low else ("warm" if "тёпл" in low else None)),
             "channel": "booth" if "со стенда" in low else ("wa_base" if "база whatsapp" in low else None)}
-    return {"summary": "КРАТКО: " + text[:40] if want_summary else None, **tags}
+    from app import work as w
+    t = w.today()
+    work_ = {"touch": "Отправили презентацию" if "отправил" in low else None,
+             "ball": "them" if "жду ответа" in low else ("us" if "перезвонить" in low else None),
+             "next_step": "Перезвонить" if "перезвонить" in low else None,
+             "due": (t + timedelta(days=(4 - t.weekday()) % 7 or 7)).isoformat() if "пятниц" in low else None}
+    return {"summary": "КРАТКО: " + text[:40] if want_summary else None, **tags, **work_}
 
 
 def fake_contact(text):
@@ -92,6 +100,9 @@ def env():
     ai.analyze_note = fake_analyze
     ai.summarize_card = lambda info, notes: f"Кто: {info[:30]}\nЗаметок: {len(notes)}"
     ai.extract_contact = fake_contact
+    ai.parse_step = lambda text: {"next_step": text.split(" в ")[0].capitalize(),
+                                  "due": (__import__("app.work", fromlist=["x"]).today() + timedelta(days=1)).isoformat()
+                                  if "завтра" in text else None}
     with TestClient(main.app) as client:
         yield client, fake
 
@@ -494,7 +505,7 @@ def test_tags(env):
     with SessionLocal() as s:
         c = s.get(Card, card.id)
         assert (c.kind, c.temp, c.channel) == ("investor", "hot", "booth")
-    assert "Теги:" in tg.sent[-1]["text"] and "🔥 Горячий" in tg.sent[-1]["text"]
+    assert "🏷 🔥 Горячий" in tg.sent[-1]["text"] and "🏷 💰 Инвестор" in tg.sent[-1]["text"]
     # заметка без тегов ничего не меняет и не шлёт лишнего
     n_sent = len(tg.sent)
     post(client, **msg(702, reply_to=700, text="созвон в 15:00"))
@@ -676,3 +687,138 @@ def test_fix_batch_source_like_on_screenshot(env):
     with SessionLocal() as s:
         sheila = s.get(Card, ids[1])
         assert sheila.socials == ["WhatsApp: +12145583809"] and sheila.channel == "wa_base"
+
+
+def test_work_ball_steps_followup_and_digest(env):
+    from app import work
+    from app.db import AppState
+
+    client, tg = env
+    post(client, **msg(1000, photo=[{"file_id": "w1", "file_size": 10}]))
+    with SessionLocal() as s:
+        card = last_card(s)
+        assert card.ball is None  # новый контакт — «не разобран»
+    card_msg = tg.sent[-1]
+    labels = [b[0] for row in card_msg["buttons"] for b in row]
+    assert labels[:3] == ["🟢 Наш ход", "🟡 Ждём их", "⚪ Без шага"] and "☑️ Шаг сделан" in labels
+
+    def cb(data, mid=None):
+        post(client, "callback_query", id="w", data=data,
+             **{"from": {"id": 1}, "message": {"message_id": mid or card_msg["id"], "chat": {"id": 1}}})
+        with SessionLocal() as s:
+            return s.get(Card, card.id)
+
+    # голосом/текстом: касание, мяч, срок
+    post(client, **msg(1001, reply_to=1000, text="Отправил презентацию в WhatsApp, жду ответа до пятницы"))
+    reply = tg.sent[-1]["text"]
+    assert "📌 Касание: Отправили презентацию" in reply and "⚽ Мяч: 🟡 Ждём их" in reply and "📅 Срок: " in reply
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        assert c.ball == "them" and c.due and c.due.weekday() == 4 and c.waiting_since
+        n = s.query(Note).filter_by(tg_message_id=1001).one()
+        assert n.kind == "touch" and n.touch == "Отправили презентацию"
+        assert work.followup_date(c) == c.due + timedelta(days=1)
+
+    # дожим: после срока мяч сам возвращается к нам
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        c.next_step = "ждём ответ по презентации"
+        s.commit()
+        assert work.expire_waiting(s, c.due) == []  # в сам срок ещё ждём
+        back = work.expire_waiting(s, c.due + timedelta(days=1))
+        s.commit()
+        assert [x.id for x in back] == [card.id]
+        c = s.get(Card, card.id)
+        assert c.ball == "us" and c.next_step == "Напомнить о себе (ждали: ждём ответ по презентации)"
+        assert s.query(Note).filter_by(card_id=card.id, kind="system").count() == 1
+
+    # без срока — через FOLLOWUP_DAYS (2) дня
+    c = cb(f"w:{card.id}:them")
+    assert c.ball == "them" and c.due is None
+    with SessionLocal() as s:
+        start = work.local_date(s.get(Card, card.id).waiting_since)
+        assert work.expire_waiting(s, start + timedelta(days=1)) == []
+        assert len(work.expire_waiting(s, start + timedelta(days=2))) == 1
+        s.commit()
+
+    # шаг сделан → касание → «что дальше» → новый шаг текстом
+    c = cb(f"wd:{card.id}")
+    assert c.next_step is None
+    assert "Что дальше?" in tg.sent[-1]["text"]
+    with SessionLocal() as s:
+        assert s.query(Note).filter_by(card_id=card.id, kind="touch").order_by(Note.id.desc()).first().touch.startswith("✅ Напомнить")
+    cb(f"wn:{card.id}")
+    prompt = tg.sent[-1]
+    assert "Следующий шаг" in prompt["text"]
+    post(client, **msg(1002, reply_to=prompt["id"], text="созвон завтра"))
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        assert c.next_step == "Созвон завтра" and c.ball == "us" and c.due == work.today() + timedelta(days=1)
+        assert s.query(Note).filter_by(tg_message_id=1002).count() == 0  # это не заметка
+    # срок кнопками
+    cb(f"wt:{card.id}")
+    due_msg = tg.sent[-1]
+    assert "Срок для" in due_msg["text"]
+    c = cb(f"wdue:{card.id}:7", mid=due_msg["id"])
+    assert c.due == work.today() + timedelta(days=7)
+    c = cb(f"wdue:{card.id}:x", mid=due_msg["id"])
+    assert c.due is None
+
+    # /todo
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        c.due = work.today() - timedelta(days=2)
+        s.commit()
+    post(client, **msg(1003, text="/todo"))
+    todo_text = tg.sent[-1]["text"]
+    assert "🟢 Наш ход:" in todo_text and "просрочено: " in todo_text and f"#P{card.id}" in todo_text
+    assert "📥 Не разобраны:" in todo_text
+    assert any(b[1] == f"c:{card.id}" for row in tg.sent[-1]["buttons"] for b in row)
+
+    # утренняя сводка: пн 9:10 — да (один раз), 8:59 и суббота — нет
+    with SessionLocal() as s:
+        st = s.get(AppState, "digest_date")
+        if st:
+            s.delete(st)
+            s.commit()
+    mon = datetime(2026, 11, 23, 9, 10, tzinfo=work.TZ)
+    assert work.tick(tg, crm.LOCK, at=mon.replace(hour=8, minute=59)) is False
+    before = len(tg.sent)
+    assert work.tick(tg, crm.LOCK, at=mon) is True
+    assert len(tg.sent) == before + len(settings.allowed_ids) and "Доброе утро" in tg.sent[-1]["text"]
+    assert work.tick(tg, crm.LOCK, at=mon.replace(hour=11)) is False  # уже отправляли сегодня
+    assert work.tick(tg, crm.LOCK, at=datetime(2026, 11, 28, 9, 30, tzinfo=work.TZ)) is False  # суббота
+
+    # сайт: страница «Работа», быстрые действия, блок в карточке
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get("/work").text
+    assert "🟢 Наш ход" in page and "🟡 Ждём их" in page and "📥 Не разобраны" in page and "просрочено" in page
+    client.post(f"/c/{card.id}/work", data={"action": "done", "then": "them"}, headers={"referer": "http://x/work"})
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        assert c.ball == "them" and c.next_step is None
+    client.post(f"/c/{card.id}/work", data={"ball": "us", "next_step": "Прислать КП", "due": "2026-12-01"})
+    client.post(f"/c/{card.id}/work", data={"action": "touch", "touch": "Созвонились, всё ок"})
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        assert (c.ball, c.next_step, c.due.isoformat()) == ("us", "Прислать КП", "2026-12-01")
+        assert s.query(Note).filter_by(card_id=card.id, touch="Созвонились, всё ок", kind="touch").count() == 1
+    card_page = client.get(f"/c/{card.id}").text
+    assert 'value="Прислать КП"' in card_page and "📌 Созвонились, всё ок" in card_page
+    assert "🟢 Наш ход" in client.get("/").text
+
+
+def test_work_untriaged_list_import_and_filters(env):
+    from app import work
+    client, _ = env
+    with SessionLocal() as s:
+        cold = Card(full_name="Холодный из списка", source="list", temp="cold")
+        hot = Card(full_name="Горячий без шага", temp="hot")
+        s.add_all([cold, hot])
+        s.commit()
+        t = work.todo(s)
+        ids = [c.id for c in t["untriaged"]]
+        assert ids.index(hot.id) < ids.index(cold.id)  # горячие разбирать первыми
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get("/work?temp=hot").text
+    assert "Горячий без шага" in page and "Холодный из списка" not in page
