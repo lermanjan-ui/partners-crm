@@ -83,6 +83,7 @@
         {% if f == 'address' %}<textarea name="{{ f }}" rows="2">{{ card[f] or '' }}</textarea>
         {% elif f == 'about' %}<textarea name="{{ f }}" rows="5" placeholder="Био из профиля, отрасль, чем занимается">{{ card[f] or '' }}</textarea>
         {% else %}<input name="{{ f }}" value="{{ card[f] or '' }}">{% endif %}
+        {% if card.ru(f) %}<span class="tr">🇷🇺 {{ card.ru(f) }}</span>{% endif %}
       </label>
     {% endfor %}
     {% for f in LIST_FIELDS %}
@@ -108,9 +109,9 @@
       {% if n.kind == 'touch' and n.touch %}<div class="touchline">📌 {{ n.touch }}</div>{% endif %}
       {% if n.summary %}
         <div class="text sum">{{ n.summary }}</div>
-        {% if n.text %}<details class="small"><summary>Полный текст</summary><div class="text">{{ n.text }}</div></details>{% endif %}
-      {% elif n.text %}<div class="text">{{ n.text }}</div>{% endif %}
-      {% if n.transcript %}<details class="small" {% if not n.summary %}open{% endif %}><summary>Расшифровка</summary><div class="text">{{ n.transcript }}</div></details>{% endif %}
+        {% if n.text %}<details class="small"><summary>Полный текст</summary><div class="text">{{ n.text }}</div>{% if n.text_ru %}<div class="tr text">🇷🇺 {{ n.text_ru }}</div>{% endif %}</details>{% endif %}
+      {% elif n.text %}<div class="text">{{ n.text }}</div>{% if n.text_ru %}<div class="tr text">🇷🇺 {{ n.text_ru }}</div>{% endif %}{% endif %}
+      {% if n.transcript %}<details class="small" {% if not n.summary %}open{% endif %}><summary>Расшифровка</summary><div class="text">{{ n.transcript }}</div>{% if n.transcript_ru %}<div class="tr text">🇷🇺 {{ n.transcript_ru }}</div>{% endif %}</details>{% endif %}
       {% if n.ai_status == 'processing' %}<div class="muted small">⏳ Расшифровываю / сокращаю…</div>{% endif %}
       {% if n.ai_status == 'error' %}<div class="note-box warn small">⚠️ Не удалось обработать: {{ n.ai_error }}
         <form method="post" action="/n/{{ n.id }}/ai" style="display:inline"><button class="link">Повторить</button></form></div>{% endif %}

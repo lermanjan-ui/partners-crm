@@ -54,6 +54,7 @@
     <span class="main">
       <b>{{ c.title }}</b> {{ c.gender_icon }} <span class="muted">{{ c.code }}</span><br>
       <span>{{ c.position or '' }}{% if c.position and c.company and c.company != c.title %} · {% endif %}{% if c.company != c.title %}{{ c.company or '' }}{% endif %}</span>
+      {% if c.ru('position') %}<span class="sumline">🇷🇺 {{ c.ru('position') }}</span>{% endif %}
       {% set cc = c.country_info %}{% if cc[0] %}<span class="sumline">{{ c.country_label }}{% if cc[1] == 'phone' %} · по номеру{% endif %}</span>{% endif %}
       {% if c.summary %}<span class="sumline">{{ c.summary|replace('\n', ' · ')|truncate(160) }}</span>{% endif %}
     </span>

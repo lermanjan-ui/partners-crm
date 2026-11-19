@@ -7,7 +7,7 @@ import time
 
 from sqlalchemy import select
 
-from . import ai, ocr, work
+from . import ai, ocr, translate, work
 from .config import settings
 from .db import BALLS, FIELD_LABELS, GENDERS, TAG_BUTTONS, TAG_GROUPS, Attachment, Card, Note, SessionLocal, TgLink, now
 from .tg import Telegram, esc
@@ -94,6 +94,8 @@ def summary(s, card: Card) -> str:
     sub = " · ".join(esc(x) for x in (card.position, card.company if card.company != card.title else None) if x)
     if sub:
         lines.append(sub)
+    if card.ru("position"):
+        lines.append(f"🇷🇺 {esc(card.ru('position'))}")
     for icon, values in (("📞", card.phones), ("✉️", card.emails), ("🔗", card.socials)):
         lines += [f"{'💬' if re.match(r'whats', v, re.I) else icon} {esc(v)}" for v in values or []]
     for icon, v in (("🌐", card.website), ("📍", card.address)):
@@ -111,7 +113,8 @@ def summary(s, card: Card) -> str:
     if wl:
         lines.append(wl)
     if card.about and not card.summary:
-        about = card.about if len(card.about) <= 400 else card.about[:400] + "…"
+        about = card.ru("about") or card.about  # в боте — по-русски, оригинал на сайте
+        about = about if len(about) <= 400 else about[:400] + "…"
         lines.append(f"ℹ️ {esc(about)}")
     if card.summary:
         lines.append(f"\n🧠 <b>Сводка</b>\n{esc(card.summary)}")
@@ -195,13 +198,21 @@ def run_ocr(card_id: int, attachment_ids: list[int] | None, tg: Telegram | None 
         s.commit()
         long_notes = [n.id for n in new_notes if n.ai_status == "processing"]
         has_notes = card.about is not None or s.scalar(select(Note.id).where(Note.card_id == card_id).limit(1)) is not None
-        if tg and chat_id:
-            try:
-                sent = tg.send(chat_id, summary(s, card), reply_to=reply_to, buttons=card_buttons(card))
-                link(s, chat_id, sent["message_id"], "bot", card_id=card.id)
-                s.commit()
-            except Exception:  # noqa: BLE001
-                log.exception("cannot send OCR result for card %s", card_id)
+    if result is not None:
+        try:  # перевод — до отправки карточки, чтобы в боте сразу был русский; вызов ИИ вне общего замка
+            translate.run_translate(card_id)
+        except Exception:  # noqa: BLE001
+            log.exception("translation before OCR reply failed for card %s", card_id)
+    if tg and chat_id:
+        with LOCK, SessionLocal() as s:
+            card = s.get(Card, card_id)
+            if card is not None:
+                try:
+                    sent = tg.send(chat_id, summary(s, card), reply_to=reply_to, buttons=card_buttons(card))
+                    link(s, chat_id, sent["message_id"], "bot", card_id=card.id)
+                    s.commit()
+                except Exception:  # noqa: BLE001
+                    log.exception("cannot send OCR result for card %s", card_id)
     for note_id in long_notes:
         start_note_ai(note_id)  # длинное сообщение — выжимка, затем сводка
     if result is not None and has_notes and not long_notes:
@@ -402,7 +413,9 @@ _sum_dirty: set[int] = set()
 
 
 def schedule_card_summary(card_id: int) -> None:
-    """Пересобрать сводку по контакту. Если пересборка уже идёт — повторить её после (берём свежие заметки)."""
+    """Пересобрать сводку по контакту. Если пересборка уже идёт — повторить её после (берём свежие заметки).
+    Заодно — перевести новое, если оно не на русском."""
+    translate.enqueue(card_id)
     with _sum_lock:
         if card_id in _sum_running:
             _sum_dirty.add(card_id)
@@ -543,6 +556,8 @@ def run_list_import(att_id: int, chat_id: int, reply_to: int | None, author: str
             cards.append(card)
             created.append(card)
         s.commit()
+        for c in created + updated:
+            translate.enqueue(c.id)
         text = list_report(created, updated, cut, origin)
         if tg:
             buttons = [[("💬 Это WhatsApp", f"ls:{batch}:whatsapp"), ("✈️ Это Telegram", f"ls:{batch}:telegram")],

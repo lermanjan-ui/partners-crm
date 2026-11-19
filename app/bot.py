@@ -352,6 +352,7 @@ def on_edit(s, tg, msg: dict) -> list[tuple]:
     if note.text == text:
         return []
     note.prev_text, note.text, note.edited_at = note.text, text, now()
+    note.text_ru = None
     att = s.get(Attachment, note.attachment_id) if note.attachment_id else None
     if crm.is_audio(att):  # у голосового правится только подпись — расшифровка остаётся
         return [("card", note.card_id)] if note.card_id else []

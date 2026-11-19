@@ -63,6 +63,7 @@ class Card(Base):
     phones: Mapped[list] = mapped_column(JSON, default=list)
     emails: Mapped[list] = mapped_column(JSON, default=list)
     socials: Mapped[list] = mapped_column(JSON, default=list)
+    translations: Mapped[dict | None] = mapped_column(JSON)  # {поле: {"src": оригинал, "ru": перевод}}
     about: Mapped[str | None] = mapped_column(Text)  # био/описание из профиля (Web Summit, LinkedIn), отрасль
     raw_text: Mapped[str | None] = mapped_column(Text)          # весь распознанный текст визитки
     unreadable: Mapped[list] = mapped_column(JSON, default=list)  # поля, которые OCR не уверенно прочитал
@@ -125,6 +126,11 @@ class Card(Base):
         if by_user:
             self.edited_fields = sorted(locked | {"gender"})
         return changed
+
+    def ru(self, field: str) -> str | None:
+        """Перевод поля на русский (если поле не на русском и перевод уже готов)."""
+        from .translate import card_ru
+        return card_ru(self, field)
 
     @property
     def country_info(self) -> tuple[str | None, str | None]:
@@ -199,6 +205,8 @@ class Note(Base):
     text: Mapped[str | None] = mapped_column(Text)
     prev_text: Mapped[str | None] = mapped_column(Text)  # прошлая версия при редактировании в Telegram
     transcript: Mapped[str | None] = mapped_column(Text)  # полная расшифровка голосового
+    text_ru: Mapped[str | None] = mapped_column(Text)        # перевод текста на русский (если он не на русском)
+    transcript_ru: Mapped[str | None] = mapped_column(Text)  # перевод расшифровки
     summary: Mapped[str | None] = mapped_column(Text)     # короткая выжимка (голосовые и длинные тексты)
     ai_status: Mapped[str] = mapped_column(String(20), default="none")  # none | processing | done | error
     ai_error: Mapped[str | None] = mapped_column(Text)
@@ -272,9 +280,10 @@ def init_db(url: str) -> None:
 NEW_COLUMNS = {
     "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP", "about": "TEXT",
               "kind": "VARCHAR(20)", "temp": "VARCHAR(20)", "channel": "VARCHAR(20)", "batch": "VARCHAR(40)",
-              "gender": "VARCHAR(10)", "ball": "VARCHAR(10)", "next_step": "TEXT", "due": "DATE", "waiting_since": "TIMESTAMP"},
+              "gender": "VARCHAR(10)", "ball": "VARCHAR(10)", "translations": "JSON", "next_step": "TEXT", "due": "DATE", "waiting_since": "TIMESTAMP"},
     "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT",
-              "tags": "JSON", "kind": "VARCHAR(20) DEFAULT 'note'", "touch": "TEXT"},
+              "tags": "JSON", "kind": "VARCHAR(20) DEFAULT 'note'", "touch": "TEXT",
+              "text_ru": "TEXT", "transcript_ru": "TEXT"},
 }
 
 

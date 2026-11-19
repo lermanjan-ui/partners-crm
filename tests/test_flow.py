@@ -15,7 +15,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from app import ai, crm, main, ocr  # noqa: E402
+from app import ai, crm, main, ocr, translate  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import Card, Note, SessionLocal  # noqa: E402
 
@@ -82,6 +82,16 @@ def fake_analyze(text, ctx="", want_summary=True):
     return {"summary": "КРАТКО: " + text[:40] if want_summary else None, **tags, **work_, "gender": gender}
 
 
+TRANSLATE_CALLS = []
+
+
+def fake_translate(items):
+    TRANSLATE_CALLS.append(dict(items))
+    if any("FAIL" in v for v in items.values()):
+        raise ai.AiError("OpenAI 500")
+    return {k: "RU: " + v for k, v in items.items()}
+
+
 def fake_contact(text):
     if "Мария" not in text and "поставку" not in text:
         return {k: None for k in ("full_name", "position", "company", "website", "address", "country")} | {
@@ -101,6 +111,8 @@ def env():
     ai.analyze_note = fake_analyze
     ai.summarize_card = lambda info, notes: f"Кто: {info[:30]}\nЗаметок: {len(notes)}"
     ai.extract_contact = fake_contact
+    ai.translate = fake_translate
+    translate.enqueue = lambda cid: translate.run_translate(cid) if cid else 0  # очередь — синхронно
     ai.parse_step = lambda text: {"next_step": text.split(" в ")[0].capitalize(),
                                   "due": (__import__("app.work", fromlist=["x"]).today() + timedelta(days=1)).isoformat()
                                   if "завтра" in text else None}
@@ -964,3 +976,79 @@ def test_country_filter(env):
     assert "Из Португалии" in client.get("/work?country=PT").text
     assert "по коду телефона" in client.get(f"/c/{gb_id}").text and "— по адресу" in client.get(f"/c/{pt_id}").text
     assert "Великобритания (по номеру)" in client.get("/export.csv").text
+
+
+def test_needs_translation():
+    from app.translate import needs_translation as nt
+    assert nt("Serial Entrepreneur | Investor") and nt("CEO") and nt("Bosh direktor") and nt("London, United Kingdom")
+    assert not nt("Генеральный директор") and not nt("Москва, ул. Тверская 1")
+    assert not nt("maria@globex.uz") and not nt("+44 7539 049424") and not nt("www.equitymatch.co") and not nt("")
+    assert nt("Hi Nikita, let's meet at the summit.")
+
+
+def test_translations(env):
+    client, tg = env
+    OCR_RESULTS["next"] = {**fake_extract([]), "full_name": "Massimiliano Sulpizi Tr", "company": "EquityMatch.co",
+                           "position": "Serial Entrepreneur | Investor", "phones": ["+44 7539 000111"],
+                           "emails": ["max@equitymatch.co"], "address": "London, United Kingdom",
+                           "about": "I'm a serial entrepreneur, six companies established.",
+                           "messages": ["Hi Nikita, let's meet at the summit."]}
+    post(client, **msg(1200, document={"file_id": "tr", "mime_type": "image/png", "file_name": "t.png", "file_size": 10}))
+    OCR_RESULTS.clear()
+    with SessionLocal() as s:
+        card = last_card(s)
+        assert card.ru("position") == "RU: Serial Entrepreneur | Investor"
+        assert card.ru("about").startswith("RU: I'm a serial") and card.ru("address") == "RU: London, United Kingdom"
+        assert "full_name" not in (card.translations or {}) and "company" not in (card.translations or {})
+        msg_note = s.query(Note).filter_by(card_id=card.id, source="ocr").one()
+        assert msg_note.text_ru == "RU: Hi Nikita, let's meet at the summit."
+    assert "🇷🇺 RU: Serial Entrepreneur" in tg.sent[-1]["text"]  # в боте — перевод должности
+    # русскую заметку не переводим
+    post(client, **msg(1201, reply_to=1200, text="Созвонились, всё хорошо"))
+    with SessionLocal() as s:
+        assert s.query(Note).filter_by(tg_message_id=1201).one().text_ru is None
+    # сайт: перевод рядом с оригиналом
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get(f"/c/{card.id}").text
+    assert "🇷🇺 RU: Serial Entrepreneur" in page and "🇷🇺 RU: Hi Nikita" in page
+    assert "🇷🇺 RU: Serial Entrepreneur" in client.get("/?q=Sulpizi").text
+    # правка поля на сайте — перевод обновляется
+    client.post(f"/c/{card.id}", data={"position": "Angel Investor"})
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        assert c.ru("position") == "RU: Angel Investor" and c.ru("about").startswith("RU: I'm")
+        # если поле поменяли, а перевод ещё не готов — старый перевод не показываем
+        c.position = "Board Member"
+        assert c.ru("position") is None
+    assert "Должность (рус)" in client.get("/export.csv").text
+    # ошибка перевода не ломает ничего
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        c.about = "FAIL text in English"
+        s.commit()
+    assert translate.run_translate(card.id) == 0
+    with SessionLocal() as s:
+        assert s.get(Card, card.id).ru("about") is None and s.get(Card, card.id).about == "FAIL text in English"
+
+
+def test_translation_backfill(env):
+    with SessionLocal() as s:
+        old = Card(full_name="Старый контакт EN", position="Head of Partnerships")
+        ru = Card(full_name="Русский", position="Директор")
+        s.add_all([old, ru])
+        s.commit()
+        ids = (old.id, ru.id)
+    queued = []
+    real = translate.enqueue
+    translate.enqueue = queued.append
+    try:
+        translate.backfill()
+    finally:
+        translate.enqueue = real
+    assert ids[0] in queued and ids[1] not in queued
+    for cid in queued:
+        translate.run_translate(cid)
+    TRANSLATE_CALLS.clear()
+    translate.backfill()  # всё переведено — повторно ничего не отправляем
+    with SessionLocal() as s:
+        assert s.get(Card, ids[0]).ru("position") == "RU: Head of Partnerships"

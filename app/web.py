@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response, Streamin
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
-from . import countries, crm, work
+from . import countries, crm, translate, work
 from .config import settings
 from .db import (BALLS, FIELD_LABELS, GENDER_UNKNOWN, GENDERS, LIST_FIELDS, STATUSES, TAG_GROUPS, TEXT_FIELDS, UNTRIAGED, Attachment, Card, Note, SessionLocal,
                  now)
@@ -293,6 +293,7 @@ async def save_card(request: Request, card_id: int):
                        if g in form and (form.get(g) or None) != getattr(card, g)}, by_user=True)
         card.unreadable = [f for f in card.unreadable or [] if f not in edited]
         s.commit()
+    translate.enqueue(card_id)  # изменённые поля — перевести, если они не на русском
     return RedirectResponse(f"/c/{card_id}", 303)
 
 
@@ -409,10 +410,10 @@ def export(request: Request):
     buf.write("﻿")  # чтобы Excel открыл UTF-8 с кириллицей
     w = csv.writer(buf, delimiter=";")
     w.writerow(["ID", "Имя", "Должность", "Компания", "Телефоны", "Email", "Сайт", "Адрес", "Страна",
-                "Соцсети", "О контакте", "Страна (определена)", "Пол", "Тип", "Температура", "Откуда", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
+                "Соцсети", "О контакте", "О контакте (рус)", "Должность (рус)", "Страна (определена)", "Пол", "Тип", "Температура", "Откуда", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
     for c in cards:
         w.writerow([c.code, c.full_name, c.position, c.company, "\n".join(c.phones or []), "\n".join(c.emails or []),
-                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about,
+                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about, c.ru("about") or "", c.ru("position") or "",
                     countries.NAMES.get(c.country_info[0], "") + (" (по номеру)" if c.country_info[1] == "phone" else ""),
                     GENDERS.get(c.gender, "").split(" ", 1)[-1],
                     *[TAG_GROUPS[g][1].get(getattr(c, g), "") for g in TAG_GROUPS], STATUSES.get(c.status, c.status),
