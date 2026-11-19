@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ card.title }} — {{ card.code }}{% endblock %}
 {% block content %}
-<h1>{{ card.title }} <span class="muted">{{ card.code }}</span></h1>
+<h1>{{ card.title }} {{ card.gender_icon }} <span class="muted">{{ card.code }}</span></h1>
 <p class="muted">Добавил {{ card.created_by or '—' }} · {{ card.created_at|dt('%d.%m.%Y %H:%M') }} · источник: {{ card.source }}{% if card.batch %} · <a href="/?batch={{ card.batch }}">пачка импорта</a>{% endif %}</p>
 
 {% if card.ocr_status == 'processing' %}<p class="note-box">⏳ Визитка распознаётся — обновите страницу через несколько секунд.</p>{% endif %}
@@ -61,6 +61,11 @@
   {% endif %}
 
   <form method="post" action="/c/{{ card.id }}" class="panel fields">
+    <div class="seg-label">Пол</div>
+    <div class="seg">
+      <label><input type="radio" name="gender" value="" {% if not card.gender %}checked{% endif %}><span>{{ GENDER_UNKNOWN }}</span></label>
+      {% for k, v in GENDERS.items() %}<label><input type="radio" name="gender" value="{{ k }}" {% if card.gender == k %}checked{% endif %}><span>{{ v }}</span></label>{% endfor %}
+    </div>
     {% for g, (title, values) in TAG_GROUPS.items() %}
     <div class="seg-label">{{ title }}</div>
     <div class="seg">

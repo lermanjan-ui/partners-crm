@@ -78,7 +78,8 @@ def fake_analyze(text, ctx="", want_summary=True):
              "ball": "them" if "жду ответа" in low else ("us" if "перезвонить" in low else None),
              "next_step": "Перезвонить" if "перезвонить" in low else None,
              "due": (t + timedelta(days=(4 - t.weekday()) % 7 or 7)).isoformat() if "пятниц" in low else None}
-    return {"summary": "КРАТКО: " + text[:40] if want_summary else None, **tags, **work_}
+    gender = "female" if "женщина" in low else ("male" if "мужчина" in low else None)
+    return {"summary": "КРАТКО: " + text[:40] if want_summary else None, **tags, **work_, "gender": gender}
 
 
 def fake_contact(text):
@@ -837,3 +838,62 @@ def test_filter_by_author(env):
     work_page = client.get("/work?author=Surnik").text
     assert "Контакт коллеги" in work_page and "Контакт Жени" not in work_page
     assert "Контакт коллеги" in client.get("/?author=Surnik&q=Контакт").text
+
+
+def test_gender(env):
+    client, tg = env
+    # со скриншота/визитки — автоматически (явное имя/обращение), в боте — значок у имени
+    OCR_RESULTS["next"] = {**fake_extract([]), "full_name": "Maria Lopez", "phones": ["+34 600 000 001"],
+                           "emails": ["maria@lopez.es"], "gender": "female"}
+    post(client, **msg(1100, document={"file_id": "g1", "mime_type": "image/png", "file_name": "m.png", "file_size": 10}))
+    OCR_RESULTS.clear()
+    assert "Maria Lopez 👩" in tg.sent[-1]["text"]
+    with SessionLocal() as s:
+        maria = last_card(s)
+        assert maria.gender == "female" and "gender" not in (maria.edited_fields or [])
+    # неоднозначное имя — не определено
+    OCR_RESULTS["next"] = {**fake_extract([]), "full_name": "Alex Kim", "phones": ["+82 10 0000 0002"],
+                           "emails": ["alex@kim.kr"], "gender": None}
+    post(client, **msg(1101, document={"file_id": "g2", "mime_type": "image/png", "file_name": "a.png", "file_size": 10}))
+    OCR_RESULTS.clear()
+    with SessionLocal() as s:
+        alex = last_card(s)
+        assert alex.gender is None
+    # словами в заметке — ставится и закрепляется
+    post(client, **msg(1102, reply_to=1101, text="Это женщина, CEO, очень интересуется"))
+    assert "👩 Пол: женщина" in tg.sent[-1]["text"]
+    with SessionLocal() as s:
+        alex = s.get(Card, alex.id)
+        assert alex.gender == "female" and "gender" in alex.edited_fields
+    # автоматика не перебивает выбор человека
+    OCR_RESULTS["next"] = {**fake_extract([]), "gender": "male"}
+    crm.run_ocr(alex.id, None)
+    OCR_RESULTS.clear()
+    with SessionLocal() as s:
+        assert s.get(Card, alex.id).gender == "female"
+    # сайт: правка, фильтр, CSV
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    client.post(f"/c/{maria.id}", data={"gender": "", "status": "new"})
+    with SessionLocal() as s:
+        assert s.get(Card, maria.id).gender is None and "gender" in s.get(Card, maria.id).edited_fields
+    client.post(f"/c/{maria.id}", data={"gender": "female", "status": "new"})
+    page = client.get("/?gender=female").text
+    assert "Maria Lopez" in page and "Alex Kim" in page and "Ivan" not in page
+    assert "Maria Lopez" not in client.get("/?gender=none").text
+    assert 'name="gender" value="female" checked' in client.get(f"/c/{maria.id}").text
+    assert "Пол" in client.get("/export.csv").text and "Женщина" in client.get("/export.csv").text
+
+
+def test_gender_from_list_import(env):
+    client, tg = env
+    ocr.extract_people = lambda files: {"source": "whatsapp", "group_name": None, "people": [
+        {"name": "~Sakine Gulec", "subtitle": None, "position": None, "company": None, "website": None,
+         "phone": "+1 (305) 812-6537", "username": None, "cut_off": False, "tilde": True, "gender": "female"},
+        {"name": "~Saeed2", "subtitle": None, "position": None, "company": None, "website": None,
+         "phone": "+1 (514) 262-0000", "username": None, "cut_off": False, "tilde": True, "gender": None}]}
+    post(client, **msg(1110, text="/list"))
+    post(client, **msg(1111, document={"file_id": "gl", "mime_type": "image/png", "file_name": "g.png", "file_size": 10}))
+    post(client, **msg(1112, text="/done"))
+    with SessionLocal() as s:
+        assert s.query(Card).filter_by(full_name="Sakine Gulec").one().gender == "female"
+        assert s.query(Card).filter_by(full_name="Saeed2").one().gender is None

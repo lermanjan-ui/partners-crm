@@ -35,6 +35,9 @@ TAG_GROUPS = {
 # Короткие подписи для кнопок в Telegram (длинные обрезаются на телефоне)
 TAG_BUTTONS = {"ws_app": "📱 Приложение WS", "wa_base": "💬 База WhatsApp"}
 
+GENDERS = {"male": "👨 Мужчина", "female": "👩 Женщина"}
+GENDER_UNKNOWN = "❔ Не определено"
+
 # «Мяч»: кто действует следующим. None — контакт ещё не разобран.
 BALLS = {"us": "🟢 Наш ход", "them": "🟡 Ждём их", "none": "⚪ Без шага"}
 UNTRIAGED = "📥 Не разобран"
@@ -69,6 +72,7 @@ class Card(Base):
     next_step: Mapped[str | None] = mapped_column(Text)
     due: Mapped[date | None] = mapped_column(Date)
     waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # с какого момента ждём их
+    gender: Mapped[str | None] = mapped_column(String(10))   # male | female; None — не определено
     kind: Mapped[str | None] = mapped_column(String(20))     # partner | investor
     temp: Mapped[str | None] = mapped_column(String(20))     # cold | warm | hot
     channel: Mapped[str | None] = mapped_column(String(20))  # booth | offline | ws_app | wa_base
@@ -108,6 +112,23 @@ class Card(Base):
                 locked.add(group)
         self.edited_fields = sorted(locked)
         return changed
+
+    def set_gender(self, value: str | None, by_user: bool) -> bool:
+        """Как теги: человек (сайт, слова в заметке) перезаписывает и закрепляет; автоматика заполняет только пустое."""
+        if value is not None and value not in GENDERS:
+            return False
+        locked = set(self.edited_fields or [])
+        if not by_user and ("gender" in locked or self.gender or value is None):
+            return False
+        changed = self.gender != value
+        self.gender = value
+        if by_user:
+            self.edited_fields = sorted(locked | {"gender"})
+        return changed
+
+    @property
+    def gender_icon(self) -> str:
+        return {"male": "👨", "female": "👩"}.get(self.gender, "")
 
     @property
     def tag_labels(self) -> list[str]:
@@ -235,7 +256,7 @@ def init_db(url: str) -> None:
 NEW_COLUMNS = {
     "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP", "about": "TEXT",
               "kind": "VARCHAR(20)", "temp": "VARCHAR(20)", "channel": "VARCHAR(20)", "batch": "VARCHAR(40)",
-              "ball": "VARCHAR(10)", "next_step": "TEXT", "due": "DATE", "waiting_since": "TIMESTAMP"},
+              "gender": "VARCHAR(10)", "ball": "VARCHAR(10)", "next_step": "TEXT", "due": "DATE", "waiting_since": "TIMESTAMP"},
     "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT",
               "tags": "JSON", "kind": "VARCHAR(20) DEFAULT 'note'", "touch": "TEXT"},
 }

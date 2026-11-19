@@ -433,6 +433,8 @@ def assign_note(s, note: Note, card: Card) -> list[str]:
     if not note.tags:
         return []
     changed = card.set_tags(note.tags, by_user=True)
+    if note.tags.get("gender"):
+        card.set_gender(note.tags["gender"], by_user=True)
     if note.tags.get("work"):
         changed += work.apply_work(card, note.tags["work"])
     return changed

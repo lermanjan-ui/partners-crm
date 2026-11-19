@@ -13,12 +13,13 @@ from sqlalchemy import func, select
 
 from . import crm, work
 from .config import settings
-from .db import (BALLS, FIELD_LABELS, LIST_FIELDS, STATUSES, TAG_GROUPS, TEXT_FIELDS, UNTRIAGED, Attachment, Card, Note, SessionLocal,
+from .db import (BALLS, FIELD_LABELS, GENDER_UNKNOWN, GENDERS, LIST_FIELDS, STATUSES, TAG_GROUPS, TEXT_FIELDS, UNTRIAGED, Attachment, Card, Note, SessionLocal,
                  now)
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals.update(STATUSES=STATUSES, FIELD_LABELS=FIELD_LABELS, TAG_GROUPS=TAG_GROUPS, BALLS=BALLS,
+                             GENDERS=GENDERS, GENDER_UNKNOWN=GENDER_UNKNOWN,
                              UNTRIAGED=UNTRIAGED, fmt_due=work.fmt_due, followup_date=work.followup_date)
 TZ = ZoneInfo(settings.timezone)
 
@@ -81,7 +82,7 @@ def by_author(cards: list, author: str) -> list:
 
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = "",
-          batch: str = "", author: str = ""):
+          batch: str = "", author: str = "", gender: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with SessionLocal() as s:
@@ -91,6 +92,8 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
         if batch:
             cards = [c for c in cards if c.batch == batch]
         cards = by_author(cards, author)
+        if gender:
+            cards = [c for c in cards if (c.gender or "none") == gender]
         all_authors = authors(s)
         for group, value in tags.items():
             if value == "none":
@@ -101,7 +104,7 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
         thumbs = dict(s.execute(select(Attachment.card_id, func.min(Attachment.id))
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
     return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs,
-                  batch=batch, author=author, authors=all_authors)
+                  batch=batch, author=author, authors=all_authors, gender=gender)
 
 
 @router.get("/work", response_class=HTMLResponse)
@@ -217,11 +220,15 @@ async def save_card(request: Request, card_id: int):
             raise HTTPException(404)
         edited = set(card.edited_fields or [])
         for f in TEXT_FIELDS:
+            if f not in form:  # поле не пришло в форме — не трогаем (а не стираем)
+                continue
             v = (form.get(f) or "").strip() or None
             if v != getattr(card, f):
                 setattr(card, f, v)
                 edited.add(f)
         for f in LIST_FIELDS:
+            if f not in form:
+                continue
             v = [x.strip() for x in (form.get(f) or "").splitlines() if x.strip()]
             if v != list(getattr(card, f) or []):
                 setattr(card, f, v)
@@ -229,6 +236,8 @@ async def save_card(request: Request, card_id: int):
         if form.get("status") in STATUSES:
             card.status = form["status"]
         card.edited_fields = sorted(edited)
+        if "gender" in form and (form.get("gender") or None) != card.gender:
+            card.set_gender(form.get("gender") or None, by_user=True)
         # теги: меняем и закрепляем только то, что человек действительно поменял в форме
         card.set_tags({g: form.get(g) or None for g in TAG_GROUPS
                        if g in form and (form.get(g) or None) != getattr(card, g)}, by_user=True)
@@ -350,10 +359,10 @@ def export(request: Request):
     buf.write("﻿")  # чтобы Excel открыл UTF-8 с кириллицей
     w = csv.writer(buf, delimiter=";")
     w.writerow(["ID", "Имя", "Должность", "Компания", "Телефоны", "Email", "Сайт", "Адрес", "Страна",
-                "Соцсети", "О контакте", "Тип", "Температура", "Откуда", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
+                "Соцсети", "О контакте", "Пол", "Тип", "Температура", "Откуда", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
     for c in cards:
         w.writerow([c.code, c.full_name, c.position, c.company, "\n".join(c.phones or []), "\n".join(c.emails or []),
-                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about,
+                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about, GENDERS.get(c.gender, "").split(" ", 1)[-1],
                     *[TAG_GROUPS[g][1].get(getattr(c, g), "") for g in TAG_GROUPS], STATUSES.get(c.status, c.status),
                     c.created_by, _dt(c.created_at, "%d.%m.%Y"), c.summary, "\n".join(notes.get(c.id, []))])
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",

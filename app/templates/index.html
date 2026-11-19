@@ -13,6 +13,11 @@
     <option value="none" {% if tags[g] == 'none' %}selected{% endif %}>{{ title }}: не задано</option>
   </select>
   {% endfor %}
+  <select name="gender" onchange="this.form.submit()">
+    <option value="">Пол: все</option>
+    {% for k, v in GENDERS.items() %}<option value="{{ k }}" {% if gender == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
+    <option value="none" {% if gender == 'none' %}selected{% endif %}>{{ GENDER_UNKNOWN }}</option>
+  </select>
   <select name="author" onchange="this.form.submit()">
     <option value="">Добавил: все</option>
     {% for a in authors %}<option value="{{ a }}" {% if author == a %}selected{% endif %}>{{ a }}</option>{% endfor %}
@@ -35,7 +40,7 @@
   <a class="row" href="/c/{{ c.id }}">
     {% if thumbs.get(c.id) %}<img class="thumb" src="/f/{{ thumbs[c.id] }}" loading="lazy" alt="">{% else %}<span class="thumb empty">—</span>{% endif %}
     <span class="main">
-      <b>{{ c.title }}</b> <span class="muted">{{ c.code }}</span><br>
+      <b>{{ c.title }}</b> {{ c.gender_icon }} <span class="muted">{{ c.code }}</span><br>
       <span>{{ c.position or '' }}{% if c.position and c.company and c.company != c.title %} · {% endif %}{% if c.company != c.title %}{{ c.company or '' }}{% endif %}</span>
       {% if c.summary %}<span class="sumline">{{ c.summary|replace('\n', ' · ')|truncate(160) }}</span>{% endif %}
     </span>

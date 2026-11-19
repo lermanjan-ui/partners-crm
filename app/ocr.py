@@ -41,6 +41,10 @@ General rules:
 - kind: "investor" ONLY if explicit: the event role tag INVESTOR, or a title like Investor / Angel Investor /
   VC / Partner at a fund. "partner" ONLY if the event role tag is STARTUP, PARTNER or EXHIBITOR. Otherwise null.
 - channel: "ws_app" if any image is a screenshot of the Web Summit app (profile / connection screen). Otherwise null.
+- gender: "male" / "female" ONLY from explicit text: a salutation or title (Mr / Ms / Mrs / Herr / Frau / Sr. / Sra. /
+  г-н / г-жа), pronouns in the text (he / she, his / her), or a given name that is unambiguous for this gender
+  (Maria, Anna, Fatima → female; Ivan, Mohammed, John → male). Otherwise null — e.g. Alex, Sasha, Kim, Jordan,
+  initials, nicknames, company names. NEVER use photos, faces or appearance to decide gender.
 
 Source-specific rules:
 - Web Summit app profile: name; the line under it is "position, company" (e.g. "Serial Entrepreneur | Investor,
@@ -70,11 +74,12 @@ SCHEMA = {
         "messages": {"type": "array", "items": {"type": "string"}},
         "kind": {"type": ["string", "null"], "enum": ["partner", "investor", None]},
         "channel": {"type": ["string", "null"], "enum": ["ws_app", None]},
+        "gender": {"type": ["string", "null"], "enum": ["male", "female", None]},
         "all_text": {"type": "string"},
         "uncertain_fields": {"type": "array", "items": {"type": "string", "enum": list(TEXT_FIELDS + LIST_FIELDS)}},
     },
     "required": ["full_name", "position", "company", "phones", "emails", "website", "address", "country",
-                 "socials", "about", "messages", "kind", "channel", "all_text", "uncertain_fields"],
+                 "socials", "about", "messages", "kind", "channel", "gender", "all_text", "uncertain_fields"],
 }
 
 LIST_PROMPT = """The image is a screenshot of a LIST of members of a group or event (WhatsApp group / community
@@ -94,6 +99,8 @@ For each row:
 - phone: the phone number as +<digits> without spaces if it starts with +, otherwise as shown; null if none.
 - username: the @username if shown (with @); null if none.
 - cut_off: true if the row is cut by the top or bottom edge of the screenshot so that part of it is not visible.
+- gender: "male" / "female" only if the given name is unambiguous for this gender (Maria → female, Robert → male);
+  otherwise null (Alex, Kim, nicknames, initials, company names). NEVER use the avatar / photo.
 
 Ignore: labels like "Admin / Админ / You / Вы", the screen title, member counters, the search field,
 the alphabet index on the right, section letters, buttons.
@@ -125,8 +132,10 @@ LIST_SCHEMA = {
                 "username": {"type": ["string", "null"]},
                 "cut_off": {"type": "boolean"},
                 "tilde": {"type": "boolean"},
+                "gender": {"type": ["string", "null"], "enum": ["male", "female", None]},
             },
-            "required": ["name", "subtitle", "position", "company", "website", "phone", "username", "cut_off", "tilde"],
+            "required": ["name", "subtitle", "position", "company", "website", "phone", "username", "cut_off", "tilde",
+                         "gender"],
         }},
     },
     "required": ["source", "group_name", "people"],
@@ -273,3 +282,4 @@ def apply_result(card: Card, r: dict) -> None:
         card.raw_text = f"{card.raw_text}\n---\n{text}" if card.raw_text else text
     card.unreadable = sorted((set(card.unreadable or []) | uncertain) - locked)
     card.set_tags({"kind": r.get("kind"), "channel": r.get("channel")}, by_user=False)
+    card.set_gender(r.get("gender"), by_user=False)

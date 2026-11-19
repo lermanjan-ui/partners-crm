@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from . import ai, ocr, work
 from .config import settings
-from .db import BALLS, FIELD_LABELS, TAG_BUTTONS, TAG_GROUPS, Attachment, Card, Note, SessionLocal, TgLink, now
+from .db import BALLS, FIELD_LABELS, GENDERS, TAG_BUTTONS, TAG_GROUPS, Attachment, Card, Note, SessionLocal, TgLink, now
 from .tg import Telegram, esc
 
 log = logging.getLogger("crm")
@@ -90,7 +90,7 @@ def card_url(card: Card) -> str | None:
 
 
 def summary(s, card: Card) -> str:
-    lines = [f"🪪 <b>{card.code}</b> {esc(card.title)}"]
+    lines = [f"🪪 <b>{card.code}</b> {esc(card.title)}" + (f" {card.gender_icon}" if card.gender else "")]
     sub = " · ".join(esc(x) for x in (card.position, card.company if card.company != card.title else None) if x)
     if sub:
         lines.append(sub)
@@ -286,6 +286,8 @@ def process_note(note_id: int, tg: Telegram | None = None) -> None:
                 w = {k: res.get(k) for k in ("touch", "ball", "next_step", "due") if res.get(k)}
                 if w:
                     tags["work"] = w
+                if res.get("gender"):
+                    tags["gender"] = res["gender"]
     except Exception as e:  # noqa: BLE001 — оригинал заметки сохранён, ошибка только помечается
         log.exception("AI failed for note %s", note_id)
         error = str(e)[:500]
@@ -307,6 +309,8 @@ def process_note(note_id: int, tg: Telegram | None = None) -> None:
         changed = [f"🏷 {c}" for c in card.set_tags(tags, by_user=True)] if card and tags else []
         if card and tags:
             changed += work.apply_work(card, tags.get("work"))
+            if tags.get("gender") and card.set_gender(tags["gender"], by_user=True):
+                changed.append(f"{card.gender_icon} Пол: {GENDERS[card.gender].split(' ', 1)[1].lower()}")
             if note.touch:
                 changed.insert(0, f"📌 Касание: {esc(note.touch)}")
         s.commit()
@@ -521,7 +525,7 @@ def run_list_import(att_id: int, chat_id: int, reply_to: int | None, author: str
             elif username:
                 socials.append(f"{'Telegram' if result.get('source') == 'telegram' else 'Ник'}: {username}")
             about = origin + (f"\nПодпись: {p['subtitle'].strip()}" if p.get("subtitle") else "")
-            data = {"full_name": name, "position": p.get("position"), "company": p.get("company"),
+            data = {"full_name": name, "gender": p.get("gender"), "position": p.get("position"), "company": p.get("company"),
                     "website": p.get("website"), "about": about, "phones": [phone] if phone else [],
                     "emails": [], "socials": socials, "uncertain_fields": []}
             tags = {"temp": "cold", "channel": channel}
