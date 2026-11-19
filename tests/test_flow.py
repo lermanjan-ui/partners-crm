@@ -1052,3 +1052,58 @@ def test_translation_backfill(env):
     translate.backfill()  # всё переведено — повторно ничего не отправляем
     with SessionLocal() as s:
         assert s.get(Card, ids[0]).ru("position") == "RU: Head of Partnerships"
+
+
+def test_investor_stages(env):
+    client, tg = env
+    post(client, **msg(1300, photo=[{"file_id": "inv", "file_size": 10}]))
+    with SessionLocal() as s:
+        card = last_card(s)
+    card_msg = tg.sent[-1]
+    labels = lambda m: [b[0] for row in (m or []) for b in row]  # noqa: E731
+    assert "Pre-Seed" not in labels(card_msg["buttons"])  # не инвестор — кнопок стадий нет
+
+    def cb(data):
+        post(client, "callback_query", id="st", data=data,
+             **{"from": {"id": 1}, "message": {"message_id": card_msg["id"], "chat": {"id": 1}}})
+        with SessionLocal() as s:
+            return s.get(Card, card.id)
+
+    cb(f"t:{card.id}:kind:investor")
+    assert {"Pre-Seed", "Seed", "Product-Market Fit", "Unicorn on Steroids"} <= set(labels(tg.edits[-1]["buttons"]))
+    cb(f"st:{card.id}:seed")
+    c = cb(f"st:{card.id}:preseed")
+    assert c.stages == ["preseed", "seed"]  # несколько, всегда по порядку
+    assert {"✅ Pre-Seed", "✅ Seed", "Product-Market Fit"} <= set(labels(tg.edits[-1]["buttons"]))
+    c = cb(f"st:{card.id}:seed")
+    assert c.stages == ["preseed"]
+    cb(f"st:{card.id}:unicorn")
+    # карточка в боте
+    post(client, "callback_query", id="c", data=f"c:{card.id}", **{"from": {"id": 1}, "message": {"message_id": 1, "chat": {"id": 1}}})
+    assert "💰 Стадии: Pre-Seed → Unicorn on Steroids" in tg.sent[-1]["text"]
+    # сайт: чекбоксы, фильтр, CSV
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get(f"/c/{card.id}").text
+    assert 'name="stages" value="preseed" checked' in page and 'name="stages" value="seed" checked' not in page
+    client.post(f"/c/{card.id}", data={"stages_form": "1", "stages": ["seed", "pmf"], "status": "new"})
+    with SessionLocal() as s:
+        assert s.get(Card, card.id).stages == ["seed", "pmf"]
+        partner = Card(full_name="Партнёр без стадий", kind="partner")
+        inv_empty = Card(full_name="Инвестор без стадий", kind="investor")
+        s.add_all([partner, inv_empty])
+        s.commit()
+    page = client.get("/?stage=seed").text
+    assert f"#P{card.id}" in page and "Seed → Product-Market Fit" in page and "Партнёр без стадий" not in page
+    assert f"#P{card.id}" not in client.get("/?stage=preseed").text
+    none_page = client.get("/?stage=none").text
+    assert "Инвестор без стадий" in none_page and "Партнёр без стадий" not in none_page
+    with SessionLocal() as s:
+        c = s.get(Card, card.id)
+        c.ball = "us"
+        s.commit()
+    assert f"#P{card.id}" in client.get("/work?stage=pmf").text
+    # сняли все отметки
+    client.post(f"/c/{card.id}", data={"stages_form": "1", "status": "new"})
+    with SessionLocal() as s:
+        assert s.get(Card, card.id).stages is None
+    assert "Стадии инвестирования" in client.get("/export.csv").text

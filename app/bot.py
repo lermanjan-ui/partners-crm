@@ -12,7 +12,7 @@ from sqlalchemy import delete, select, update
 
 from . import ai, crm, work
 from .config import settings
-from .db import BALLS, TAG_GROUPS, Attachment, Card, ChatMode, MediaGroup, Note, ProcessedUpdate, TgLink, now
+from .db import BALLS, STAGES, TAG_GROUPS, Attachment, Card, ChatMode, MediaGroup, Note, ProcessedUpdate, TgLink, now
 from .tg import Telegram, esc
 
 log = logging.getLogger("bot")
@@ -497,6 +497,20 @@ def on_callback(s, tg, cq: dict) -> list[tuple]:
         except Exception:  # noqa: BLE001 — старое сообщение могло быть удалено; тег уже сохранён
             log.exception("cannot update buttons")
         tg.answer_callback(cq["id"], TAG_GROUPS[group][1][value] if new else "Тег снят")
+        return []
+    elif kind == "st":  # стадия инвестирования: включить/выключить (можно несколько)
+        card = s.get(Card, int(args[0])) if args and args[0].isdigit() else None
+        stage = args[1] if len(args) > 1 else None
+        if card is None or stage not in STAGES:
+            tg.answer_callback(cq["id"], "Не найдено")
+            return []
+        on = card.toggle_stage(stage)
+        card.updated_at = now()
+        try:
+            tg.edit_buttons(chat_id, mid, crm.card_buttons(card))
+        except Exception:  # noqa: BLE001
+            log.exception("cannot update buttons")
+        tg.answer_callback(cq["id"], ("✅ " if on else "Снято: ") + STAGES[stage])
         return []
     elif kind in ("w", "wd", "wn", "wt", "wdue"):
         return on_work_callback(s, tg, cq, kind, args, chat_id, mid, author_name(user))

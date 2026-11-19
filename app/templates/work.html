@@ -4,6 +4,7 @@
   <div class="witem {% if c.due and c.ball == 'us' and c.due < today %}overdue{% endif %}">
     <a class="t" href="/c/{{ c.id }}">{{ c.title }}</a> <span class="muted">{{ c.code }}</span>
     {% for g in ('temp', 'kind') %}{% if c[g] %}<span class="tag t-{{ c[g] }}">{{ TAG_GROUPS[g][1][c[g]] }}</span>{% endif %}{% endfor %}
+    {% if c.kind == 'investor' and c.stage_labels %}<span class="tag stage">{{ c.stage_labels|join(' → ') }}</span>{% endif %}
     <div class="muted small">{% if c.company and c.company != c.title %}{{ c.company }} · {% endif %}👤 {{ c.created_by or '—' }}</div>
     {% if c.next_step %}<div class="step">🎯 {{ c.next_step }}</div>{% endif %}
     {% if mode == 'us' and c.due %}<div class="small {% if c.due < today %}red{% endif %}">📅 {% if c.due < today %}просрочено {{ (today - c.due).days }} дн. ({{ fmt_due(c.due, today) }}){% else %}{{ fmt_due(c.due, today) }}{% endif %}</div>{% endif %}
@@ -40,6 +41,11 @@
     <option value="">Страна: все</option>
     {% for code, label, n in countries %}<option value="{{ code }}" {% if country == code %}selected{% endif %}>{{ label }} ({{ n }})</option>{% endfor %}
     <option value="none" {% if country == 'none' %}selected{% endif %}>Страна: не указана</option>
+  </select>
+  <select name="stage" onchange="this.form.submit()">
+    <option value="">Стадия: все</option>
+    {% for k, v in STAGES.items() %}<option value="{{ k }}" {% if stage == k %}selected{% endif %}>💰 {{ v }}</option>{% endfor %}
+    <option value="none" {% if stage == 'none' %}selected{% endif %}>💰 Инвестор, стадия не указана</option>
   </select>
   <select name="author" onchange="this.form.submit()">
     <option value="">Добавил: все</option>

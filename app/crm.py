@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from . import ai, ocr, translate, work
 from .config import settings
-from .db import BALLS, FIELD_LABELS, GENDERS, TAG_BUTTONS, TAG_GROUPS, Attachment, Card, Note, SessionLocal, TgLink, now
+from .db import BALLS, FIELD_LABELS, GENDERS, STAGES, TAG_BUTTONS, TAG_GROUPS, Attachment, Card, Note, SessionLocal, TgLink, now
 from .tg import Telegram, esc
 
 log = logging.getLogger("crm")
@@ -96,6 +96,8 @@ def summary(s, card: Card) -> str:
         lines.append(sub)
     if card.ru("position"):
         lines.append(f"🇷🇺 {esc(card.ru('position'))}")
+    if card.kind == "investor" and card.stage_labels:
+        lines.append("💰 Стадии: " + " → ".join(card.stage_labels))
     for icon, values in (("📞", card.phones), ("✉️", card.emails), ("🔗", card.socials)):
         lines += [f"{'💬' if re.match(r'whats', v, re.I) else icon} {esc(v)}" for v in values or []]
     for icon, v in (("🌐", card.website), ("📍", card.address)):
@@ -141,8 +143,16 @@ def work_buttons(card: Card) -> list:
             [("☑️ Шаг сделан", f"wd:{card.id}"), ("🎯 Новый шаг", f"wn:{card.id}"), ("📅 Срок", f"wt:{card.id}")]]
 
 
+def stage_buttons(card: Card) -> list:
+    """Только у инвесторов: стадии инвестирования, можно несколько."""
+    if card.kind != "investor":
+        return []
+    row = [(("✅ " if k in (card.stages or []) else "") + label, f"st:{card.id}:{k}") for k, label in STAGES.items()]
+    return [row[:2], row[2:]]
+
+
 def card_buttons(card: Card):
-    rows = work_buttons(card) + tag_buttons(card) + [[(f"💬 WhatsApp {'+' + n if len(card.whatsapp_numbers) > 1 else ''}".strip(), f"https://wa.me/{n}")]
+    rows = work_buttons(card) + tag_buttons(card) + stage_buttons(card) + [[(f"💬 WhatsApp {'+' + n if len(card.whatsapp_numbers) > 1 else ''}".strip(), f"https://wa.me/{n}")]
             for n in card.whatsapp_numbers[:3]]
     url = card_url(card)
     if url:

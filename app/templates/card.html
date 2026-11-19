@@ -74,6 +74,15 @@
       <label><input type="radio" name="{{ g }}" value="" {% if not card[g] %}checked{% endif %}><span>—</span></label>
       {% for k, v in values.items() %}<label><input type="radio" name="{{ g }}" value="{{ k }}" {% if card[g] == k %}checked{% endif %}><span class="t-{{ k }}">{{ v }}</span></label>{% endfor %}
     </div>
+    {% if g == 'kind' %}
+    <div class="stagebox" {% if card.kind != 'investor' and not card.stages %}hidden{% endif %}>
+      <input type="hidden" name="stages_form" value="1">
+      <div class="seg-label">💰 Стадии инвестирования <span class="muted">(можно несколько)</span></div>
+      <div class="seg">
+        {% for k, v in STAGES.items() %}<label><input type="checkbox" name="stages" value="{{ k }}" {% if k in (card.stages or []) %}checked{% endif %}><span>{{ v }}</span></label>{% endfor %}
+      </div>
+    </div>
+    {% endif %}
     {% endfor %}
     <label>Статус
       <select name="status">{% for k, v in STATUSES.items() %}<option value="{{ k }}" {% if k == card.status %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
@@ -134,4 +143,12 @@
   </form>
 </section>
 </div>
+<script>
+document.querySelectorAll('input[name="kind"]').forEach(function (r) {
+  r.addEventListener('change', function () {
+    var box = document.querySelector('.stagebox');
+    if (box && r.checked) box.hidden = (r.value !== 'investor') && !box.querySelector('input[name="stages"]:checked');
+  });
+});
+</script>
 {% endblock %}

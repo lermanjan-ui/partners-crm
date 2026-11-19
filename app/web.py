@@ -13,13 +13,13 @@ from sqlalchemy import func, select
 
 from . import countries, crm, translate, work
 from .config import settings
-from .db import (BALLS, FIELD_LABELS, GENDER_UNKNOWN, GENDERS, LIST_FIELDS, STATUSES, TAG_GROUPS, TEXT_FIELDS, UNTRIAGED, Attachment, Card, Note, SessionLocal,
+from .db import (BALLS, FIELD_LABELS, GENDER_UNKNOWN, GENDERS, STAGES, LIST_FIELDS, STATUSES, TAG_GROUPS, TEXT_FIELDS, UNTRIAGED, Attachment, Card, Note, SessionLocal,
                  now)
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals.update(STATUSES=STATUSES, FIELD_LABELS=FIELD_LABELS, TAG_GROUPS=TAG_GROUPS, BALLS=BALLS,
-                             GENDERS=GENDERS, GENDER_UNKNOWN=GENDER_UNKNOWN,
+                             GENDERS=GENDERS, GENDER_UNKNOWN=GENDER_UNKNOWN, STAGES=STAGES,
                              UNTRIAGED=UNTRIAGED, fmt_due=work.fmt_due, followup_date=work.followup_date)
 TZ = ZoneInfo(settings.timezone)
 
@@ -113,6 +113,13 @@ def country_options(cards: list) -> list[tuple[str, str, int]]:
     return sorted(((k, countries.label(k), n) for k, n in counts.items()), key=lambda x: (-x[2], x[1]))
 
 
+def by_stage(cards: list, stage: str) -> list:
+    """Инвесторы, у которых среди стадий есть выбранная; «none» — инвесторы без отмеченных стадий."""
+    if stage == "none":
+        return [c for c in cards if c.kind == "investor" and not c.stages]
+    return [c for c in cards if stage in (c.stages or [])] if stage else cards
+
+
 def by_author(cards: list, author: str) -> list:
     if author == "none":
         return [c for c in cards if not c.created_by]
@@ -122,7 +129,7 @@ def by_author(cards: list, author: str) -> list:
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = "",
           batch: str = "", author: str = "", gender: str = "", period: str = "", date_from: str = "",
-          date_to: str = "", country: str = ""):
+          date_to: str = "", country: str = "", stage: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with SessionLocal() as s:
@@ -132,7 +139,7 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
         if batch:
             cards = [c for c in cards if c.batch == batch]
         all_countries = country_options(list(s.scalars(select(Card))))
-        cards = by_country(by_author(cards, author), country)
+        cards = by_stage(by_country(by_author(cards, author), country), stage)
         start, end = date_range(period, date_from, date_to)
         cards = by_added(cards, start, end)
         if gender:
@@ -148,13 +155,13 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
     return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs,
                   batch=batch, author=author, authors=all_authors, gender=gender, period=period,
-                  country=country, countries=all_countries,
+                  country=country, countries=all_countries, stage=stage,
                   date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "")
 
 
 @router.get("/work", response_class=HTMLResponse)
 def work_page(request: Request, kind: str = "", temp: str = "", channel: str = "", author: str = "", period: str = "",
-              date_from: str = "", date_to: str = "", country: str = ""):
+              date_from: str = "", date_to: str = "", country: str = "", stage: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with crm.LOCK, SessionLocal() as s:
@@ -165,13 +172,13 @@ def work_page(request: Request, kind: str = "", temp: str = "", channel: str = "
         all_countries = country_options(list(s.scalars(select(Card))))
     start, end = date_range(period, date_from, date_to)
     for key in ("overdue", "due_today", "later", "waiting", "none", "untriaged"):
-        data[key] = by_country(by_added(by_author(data[key], author), start, end), country)
+        data[key] = by_stage(by_country(by_added(by_author(data[key], author), start, end), country), stage)
         for group, value in tags.items():
             if value:
                 data[key] = [c for c in data[key] if (getattr(c, group) or "none") == value]
     return render(request, "work.html", d=data, tags=tags, today=data["today"], author=author, authors=all_authors,
                   period=period, date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "",
-                  country=country, countries=all_countries)
+                  country=country, countries=all_countries, stage=stage)
 
 
 def _back(request: Request, default: str) -> str:
@@ -286,6 +293,9 @@ async def save_card(request: Request, card_id: int):
         if form.get("status") in STATUSES:
             card.status = form["status"]
         card.edited_fields = sorted(edited)
+        if "stages_form" in form:  # отметки стадий (чекбоксы): пришедший набор — и есть выбор
+            chosen = set(form.getlist("stages"))
+            card.stages = [k for k in STAGES if k in chosen] or None
         if "gender" in form and (form.get("gender") or None) != card.gender:
             card.set_gender(form.get("gender") or None, by_user=True)
         # теги: меняем и закрепляем только то, что человек действительно поменял в форме
@@ -410,10 +420,10 @@ def export(request: Request):
     buf.write("﻿")  # чтобы Excel открыл UTF-8 с кириллицей
     w = csv.writer(buf, delimiter=";")
     w.writerow(["ID", "Имя", "Должность", "Компания", "Телефоны", "Email", "Сайт", "Адрес", "Страна",
-                "Соцсети", "О контакте", "О контакте (рус)", "Должность (рус)", "Страна (определена)", "Пол", "Тип", "Температура", "Откуда", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
+                "Соцсети", "Стадии инвестирования", "О контакте", "О контакте (рус)", "Должность (рус)", "Страна (определена)", "Пол", "Тип", "Температура", "Откуда", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
     for c in cards:
         w.writerow([c.code, c.full_name, c.position, c.company, "\n".join(c.phones or []), "\n".join(c.emails or []),
-                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about, c.ru("about") or "", c.ru("position") or "",
+                    c.website, c.address, c.country, "\n".join(c.socials or []), ", ".join(c.stage_labels), c.about, c.ru("about") or "", c.ru("position") or "",
                     countries.NAMES.get(c.country_info[0], "") + (" (по номеру)" if c.country_info[1] == "phone" else ""),
                     GENDERS.get(c.gender, "").split(" ", 1)[-1],
                     *[TAG_GROUPS[g][1].get(getattr(c, g), "") for g in TAG_GROUPS], STATUSES.get(c.status, c.status),

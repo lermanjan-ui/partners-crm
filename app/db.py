@@ -35,6 +35,9 @@ TAG_GROUPS = {
 # Короткие подписи для кнопок в Telegram (длинные обрезаются на телефоне)
 TAG_BUTTONS = {"ws_app": "📱 Приложение WS", "wa_base": "💬 База WhatsApp"}
 
+# Стадии, на которых инвестор готов инвестировать: можно несколько; ставятся только вручную.
+STAGES = {"preseed": "Pre-Seed", "seed": "Seed", "pmf": "Product-Market Fit", "unicorn": "Unicorn on Steroids"}
+
 GENDERS = {"male": "👨 Мужчина", "female": "👩 Женщина"}
 GENDER_UNKNOWN = "❔ Не определено"
 
@@ -75,6 +78,7 @@ class Card(Base):
     waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # с какого момента ждём их
     gender: Mapped[str | None] = mapped_column(String(10))   # male | female; None — не определено
     kind: Mapped[str | None] = mapped_column(String(20))     # partner | investor
+    stages: Mapped[list | None] = mapped_column(JSON)        # стадии инвестирования (для инвесторов), см. STAGES
     temp: Mapped[str | None] = mapped_column(String(20))     # cold | warm | hot
     channel: Mapped[str | None] = mapped_column(String(20))  # booth | offline | ws_app | wa_base
     source: Mapped[str] = mapped_column(String(20), default="bot")  # bot | web | list | form (на будущее)
@@ -147,6 +151,20 @@ class Card(Base):
     def country_label(self) -> str:
         from .countries import label
         return label(self.country_info[0])
+
+    def toggle_stage(self, stage: str) -> bool:
+        """Включить/выключить стадию. Возвращает True, если стадия теперь включена."""
+        if stage not in STAGES:
+            return False
+        current = set(self.stages or [])
+        on = stage not in current
+        current = current | {stage} if on else current - {stage}
+        self.stages = [k for k in STAGES if k in current]  # всегда в порядке Pre-Seed → … → Unicorn
+        return on
+
+    @property
+    def stage_labels(self) -> list[str]:
+        return [STAGES[k] for k in STAGES if k in (self.stages or [])]
 
     @property
     def gender_icon(self) -> str:
@@ -280,7 +298,7 @@ def init_db(url: str) -> None:
 NEW_COLUMNS = {
     "cards": {"summary": "TEXT", "summary_at": "TIMESTAMP", "about": "TEXT",
               "kind": "VARCHAR(20)", "temp": "VARCHAR(20)", "channel": "VARCHAR(20)", "batch": "VARCHAR(40)",
-              "gender": "VARCHAR(10)", "ball": "VARCHAR(10)", "translations": "JSON", "next_step": "TEXT", "due": "DATE", "waiting_since": "TIMESTAMP"},
+              "gender": "VARCHAR(10)", "ball": "VARCHAR(10)", "translations": "JSON", "stages": "JSON", "next_step": "TEXT", "due": "DATE", "waiting_since": "TIMESTAMP"},
     "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT",
               "tags": "JSON", "kind": "VARCHAR(20) DEFAULT 'note'", "touch": "TEXT",
               "text_ru": "TEXT", "transcript_ru": "TEXT"},

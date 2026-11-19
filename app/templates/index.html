@@ -23,6 +23,11 @@
     {% for code, label, n in countries %}<option value="{{ code }}" {% if country == code %}selected{% endif %}>{{ label }} ({{ n }})</option>{% endfor %}
     <option value="none" {% if country == 'none' %}selected{% endif %}>Страна: не указана</option>
   </select>
+  <select name="stage" onchange="this.form.submit()">
+    <option value="">Стадия: все</option>
+    {% for k, v in STAGES.items() %}<option value="{{ k }}" {% if stage == k %}selected{% endif %}>💰 {{ v }}</option>{% endfor %}
+    <option value="none" {% if stage == 'none' %}selected{% endif %}>💰 Инвестор, стадия не указана</option>
+  </select>
   <select name="author" onchange="this.form.submit()">
     <option value="">Добавил: все</option>
     {% for a in authors %}<option value="{{ a }}" {% if author == a %}selected{% endif %}>{{ a }}</option>{% endfor %}
@@ -65,6 +70,7 @@
     <span class="meta">
       {% if c.ball %}<span class="tag b-{{ c.ball }}">{{ BALLS[c.ball] }}</span>{% endif %}
       {% for g in ('temp', 'kind', 'channel') %}{% if c[g] %}<span class="tag t-{{ c[g] }}">{{ TAG_GROUPS[g][1][c[g]] }}</span>{% endif %}{% endfor %}
+      {% if c.kind == 'investor' and c.stage_labels %}<span class="tag stage">{{ c.stage_labels|join(' → ') }}</span>{% endif %}
       <span class="tag s-{{ c.status }}">{{ STATUSES.get(c.status, c.status) }}</span>
       {% if c.ocr_status in ('processing', 'from_note') %}<span class="tag">⏳ заполняется</span>{% endif %}
       {% if c.unreadable or c.ocr_status == 'error' %}<span class="tag warn">проверить</span>{% endif %}
