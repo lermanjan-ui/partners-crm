@@ -1107,3 +1107,45 @@ def test_investor_stages(env):
     with SessionLocal() as s:
         assert s.get(Card, card.id).stages is None
     assert "Стадии инвестирования" in client.get("/export.csv").text
+
+
+def test_sorting(env):
+    from app import work
+    from app.web import SORTS
+    client, _ = env
+    t = datetime(2026, 11, 1, 12, 0, tzinfo=work.TZ)
+    with SessionLocal() as s:
+        a = Card(full_name="SortA старый полный", created_at=t, temp="cold", status="rejected", company="A", position="CEO",
+                 phones=["+447700900001"], emails=["a@a.com"], socials=["Telegram: @a"], about="about")
+        b = Card(full_name="SortB средний", created_at=t + timedelta(days=5), temp="hot", status="agreed",
+                 due=work.today() - timedelta(days=1), ball="us")
+        c = Card(full_name="SortC новый", created_at=t + timedelta(days=10), status="new", due=work.today() + timedelta(days=3))
+        s.add_all([a, b, c])
+        s.flush()
+        # у старого A свежая заметка, у C — давняя
+        s.add_all([Note(card_id=a.id, text="вчера говорили", created_at=t + timedelta(days=15)),
+                   Note(card_id=a.id, text="ещё", created_at=t + timedelta(days=15)),
+                   Note(card_id=c.id, text="давно", created_at=t + timedelta(days=10)),
+                   Note(card_id=b.id, text="системная", kind="system", created_at=t + timedelta(days=20))])
+        s.commit()
+    client.post("/login", data={"username": "anna", "password": "pw"})
+
+    def order(sort):
+        page = client.get(f"/?q=Sort&sort={sort}").text
+        return [n for _, n in sorted((page.index(n), n) for n in ("SortA", "SortB", "SortC"))]
+
+    assert order("new") == ["SortC", "SortB", "SortA"]
+    assert order("old") == ["SortA", "SortB", "SortC"]
+    assert order("stale") == ["SortB", "SortC", "SortA"]   # B: системная отметка не считается активностью
+    assert order("fresh") == ["SortA", "SortC", "SortB"]
+    assert order("due") == ["SortB", "SortC", "SortA"]     # просроченный, ближайший, без срока
+    assert order("temp") == ["SortB", "SortA", "SortC"]    # 🔥, ❄️, без температуры
+    assert order("status") == ["SortB", "SortC", "SortA"]  # договорились, новый, отказ
+    assert order("notes")[0] == "SortA"
+    assert order("incomplete")[-1] == "SortA" and order("complete")[0] == "SortA"
+    assert "▦ 8/8" in client.get("/?q=SortA&sort=complete").text
+    assert "нет: компания, должность, телефон" in client.get("/?q=SortB&sort=incomplete").text
+    # выбранная сортировка запоминается
+    client.get("/?sort=old")
+    assert 'value="old" selected' in client.get("/").text
+    assert len(SORTS) == 10

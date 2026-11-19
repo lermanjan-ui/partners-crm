@@ -103,6 +103,9 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 .tr { display: block; margin-top: 3px; font-size: 13px; color: var(--muted); font-style: italic; white-space: pre-wrap; }
 .tag.stage { background: #ede7ff; color: #4b2ea8; border-color: transparent; }
 @media (prefers-color-scheme: dark) { .tag.stage { background: #2b2350; color: #c9b8ff; } }
+.listhead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0 8px; }
+.sortform label { margin: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.sortform select { width: auto; }
 pre { white-space: pre-wrap; font: 13px/1.4 ui-monospace, monospace; }
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }

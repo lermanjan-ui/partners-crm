@@ -51,7 +51,17 @@
   </form>
 </div>
 {% endif %}
-<p class="muted">Контактов: {{ cards|length }}</p>
+<div class="listhead">
+  <span class="muted">Контактов: {{ cards|length }}</span>
+  <form method="get" class="sortform">
+    {% for k, v in request.query_params.multi_items() %}{% if k != 'sort' %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endif %}{% endfor %}
+    <label class="small">Сортировка
+      <select name="sort" onchange="this.form.submit()">
+        {% for k, v in SORTS.items() %}<option value="{{ k }}" {% if sort == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
+      </select>
+    </label>
+  </form>
+</div>
 <div class="list">
 {% for c in cards %}
   <a class="row" href="/c/{{ c.id }}">
@@ -75,6 +85,9 @@
       {% if c.ocr_status in ('processing', 'from_note') %}<span class="tag">⏳ заполняется</span>{% endif %}
       {% if c.unreadable or c.ocr_status == 'error' %}<span class="tag warn">проверить</span>{% endif %}
       <span class="muted">{% if c.created_by %}👤 {{ c.created_by }} · {% endif %}{{ c.created_at|dt('%d.%m %H:%M') }}{% if counts.get(c.id) %} · 📝 {{ counts[c.id] }}{% endif %}</span>
+      {% if sort in ('stale', 'fresh') %}<span class="muted small">🕓 {% if activity.get(c.id) %}последняя заметка {{ activity[c.id]|dt('%d.%m') }}{% else %}заметок нет{% endif %}</span>{% endif %}
+      {% if sort == 'due' and c.due %}<span class="small {% if c.due < today and c.ball == 'us' %}red{% endif %}">📅 {{ fmt_due(c.due, today) }}</span>{% endif %}
+      {% if sort in ('incomplete', 'complete') %}{% set cm = completeness(c) %}<span class="muted small" title="{% if cm[1] %}нет: {{ cm[1]|join(', ') }}{% endif %}">▦ {{ cm[0] }}/8{% if cm[1] %} · нет: {{ cm[1][:3]|join(', ') }}{% if cm[1]|length > 3 %}…{% endif %}{% endif %}</span>{% endif %}
     </span>
   </a>
 {% else %}

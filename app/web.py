@@ -2,7 +2,7 @@
 import csv
 import hmac
 import io
-from datetime import timedelta, timezone
+from datetime import date, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -120,6 +120,63 @@ def by_stage(cards: list, stage: str) -> list:
     return [c for c in cards if stage in (c.stages or [])] if stage else cards
 
 
+SORTS = {
+    "new": "Новые сверху",
+    "old": "Старые сверху",
+    "stale": "Давно не трогали — сверху",
+    "fresh": "Свежая активность — сверху",
+    "due": "Срок шага: просроченные и ближайшие",
+    "temp": "Температура: 🔥 → ❄️",
+    "status": "Статус воронки",
+    "notes": "Больше заметок — сверху",
+    "incomplete": "Неполные — сверху",
+    "complete": "Полные — сверху",
+}
+STATUS_ORDER = {"agreed": 0, "in_progress": 1, "new": 2, "postponed": 3, "rejected": 4}
+TEMP_ORDER = {"hot": 0, "warm": 1, "cold": 2}
+# Что считаем «заполненностью» контакта (8 пунктов)
+COMPLETENESS = (("имя", lambda c: c.full_name), ("компания", lambda c: c.company), ("должность", lambda c: c.position),
+                ("телефон", lambda c: c.phones), ("email", lambda c: c.emails),
+                ("мессенджер/соцсеть", lambda c: c.socials), ("страна", lambda c: c.country_info[0]),
+                ("о контакте", lambda c: c.about))
+
+
+def completeness(card) -> tuple[int, list[str]]:
+    """(сколько заполнено из 8, чего не хватает)."""
+    missing = [name for name, get in COMPLETENESS if not get(card)]
+    return len(COMPLETENESS) - len(missing), missing
+
+
+def last_activity(s) -> dict:
+    """Последняя заметка или касание по контакту (системные отметки CRM не считаются)."""
+    return dict(s.execute(select(Note.card_id, func.max(Note.created_at))
+                          .where(Note.card_id.is_not(None), Note.kind != "system").group_by(Note.card_id)).all())
+
+
+def _ts(dt) -> float:
+    if dt is None:
+        return 0.0
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def sort_cards(cards: list, sort: str, counts: dict, activity: dict) -> list:
+    added = lambda c: _ts(c.created_at)  # noqa: E731
+    act = lambda c: max(_ts(activity.get(c.id)), added(c))  # noqa: E731 — без заметок: дата добавления
+    keys = {
+        "new": lambda c: -added(c),
+        "old": lambda c: added(c),
+        "stale": lambda c: act(c),
+        "fresh": lambda c: -act(c),
+        "due": lambda c: (c.due is None, c.due or date.max, -added(c)),
+        "temp": lambda c: (TEMP_ORDER.get(c.temp, 3), -added(c)),
+        "status": lambda c: (STATUS_ORDER.get(c.status, 5), -added(c)),
+        "notes": lambda c: (-counts.get(c.id, 0), -added(c)),
+        "incomplete": lambda c: (completeness(c)[0], -added(c)),
+        "complete": lambda c: (-completeness(c)[0], -added(c)),
+    }
+    return sorted(cards, key=keys.get(sort, keys["new"]))
+
+
 def by_author(cards: list, author: str) -> list:
     if author == "none":
         return [c for c in cards if not c.created_by]
@@ -129,7 +186,7 @@ def by_author(cards: list, author: str) -> list:
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = "",
           batch: str = "", author: str = "", gender: str = "", period: str = "", date_from: str = "",
-          date_to: str = "", country: str = "", stage: str = ""):
+          date_to: str = "", country: str = "", stage: str = "", sort: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with SessionLocal() as s:
@@ -151,11 +208,19 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
             elif value:
                 cards = [c for c in cards if getattr(c, group) == value]
         counts = dict(s.execute(select(Note.card_id, func.count()).group_by(Note.card_id)).all())
+        # сортировка запоминается для этого входа (сессия), пока не выберут другую
+        if sort in SORTS:
+            request.session["sort"] = sort
+        sort = sort if sort in SORTS else request.session.get("sort", "new")
+        activity = last_activity(s)
+        cards = sort_cards(cards, sort, counts, activity)
         thumbs = dict(s.execute(select(Attachment.card_id, func.min(Attachment.id))
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
     return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs,
                   batch=batch, author=author, authors=all_authors, gender=gender, period=period,
-                  country=country, countries=all_countries, stage=stage,
+                  country=country, countries=all_countries, stage=stage, sort=sort, SORTS=SORTS,
+                  activity=activity, completeness=completeness,
+                  today=work.today(),
                   date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "")
 
 
