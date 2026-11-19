@@ -36,6 +36,11 @@
   <label class="small">по <input type="date" name="date_to" value="{{ date_to }}" onchange="this.form.submit()"></label>
   {% if period or date_from or date_to %}<a class="small" href="?{% for k in ['q','status','kind','temp','channel','author','gender','batch'] %}{% if request.query_params.get(k) %}{{ k }}={{ request.query_params.get(k)|urlencode }}&{% endif %}{% endfor %}">× сбросить даты</a>{% endif %}
 </div>
+  <select name="country" onchange="this.form.submit()">
+    <option value="">Страна: все</option>
+    {% for code, label, n in countries %}<option value="{{ code }}" {% if country == code %}selected{% endif %}>{{ label }} ({{ n }})</option>{% endfor %}
+    <option value="none" {% if country == 'none' %}selected{% endif %}>Страна: не указана</option>
+  </select>
   <select name="author" onchange="this.form.submit()">
     <option value="">Добавил: все</option>
     {% for a in authors %}<option value="{{ a }}" {% if author == a %}selected{% endif %}>{{ a }}</option>{% endfor %}

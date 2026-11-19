@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response, Streamin
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
-from . import crm, work
+from . import countries, crm, work
 from .config import settings
 from .db import (BALLS, FIELD_LABELS, GENDER_UNKNOWN, GENDERS, LIST_FIELDS, STATUSES, TAG_GROUPS, TEXT_FIELDS, UNTRIAGED, Attachment, Card, Note, SessionLocal,
                  now)
@@ -97,6 +97,22 @@ def by_added(cards: list, start, end) -> list:
     return cards
 
 
+def by_country(cards: list, country: str) -> list:
+    if country == "none":
+        return [c for c in cards if not c.country_info[0]]
+    return [c for c in cards if c.country_info[0] == country] if country else cards
+
+
+def country_options(cards: list) -> list[tuple[str, str, int]]:
+    """Страны, которые есть в базе: (код, «🇬🇧 Великобритания», сколько контактов) — по убыванию."""
+    counts: dict[str, int] = {}
+    for c in cards:
+        code = c.country_info[0]
+        if code:
+            counts[code] = counts.get(code, 0) + 1
+    return sorted(((k, countries.label(k), n) for k, n in counts.items()), key=lambda x: (-x[2], x[1]))
+
+
 def by_author(cards: list, author: str) -> list:
     if author == "none":
         return [c for c in cards if not c.created_by]
@@ -106,7 +122,7 @@ def by_author(cards: list, author: str) -> list:
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = "",
           batch: str = "", author: str = "", gender: str = "", period: str = "", date_from: str = "",
-          date_to: str = ""):
+          date_to: str = "", country: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with SessionLocal() as s:
@@ -115,7 +131,8 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
             cards = [c for c in cards if c.status == status]
         if batch:
             cards = [c for c in cards if c.batch == batch]
-        cards = by_author(cards, author)
+        all_countries = country_options(list(s.scalars(select(Card))))
+        cards = by_country(by_author(cards, author), country)
         start, end = date_range(period, date_from, date_to)
         cards = by_added(cards, start, end)
         if gender:
@@ -131,12 +148,13 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
     return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs,
                   batch=batch, author=author, authors=all_authors, gender=gender, period=period,
+                  country=country, countries=all_countries,
                   date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "")
 
 
 @router.get("/work", response_class=HTMLResponse)
 def work_page(request: Request, kind: str = "", temp: str = "", channel: str = "", author: str = "", period: str = "",
-              date_from: str = "", date_to: str = ""):
+              date_from: str = "", date_to: str = "", country: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with crm.LOCK, SessionLocal() as s:
@@ -144,14 +162,16 @@ def work_page(request: Request, kind: str = "", temp: str = "", channel: str = "
             s.commit()
         data = work.todo(s)
         all_authors = authors(s)
+        all_countries = country_options(list(s.scalars(select(Card))))
     start, end = date_range(period, date_from, date_to)
     for key in ("overdue", "due_today", "later", "waiting", "none", "untriaged"):
-        data[key] = by_added(by_author(data[key], author), start, end)
+        data[key] = by_country(by_added(by_author(data[key], author), start, end), country)
         for group, value in tags.items():
             if value:
                 data[key] = [c for c in data[key] if (getattr(c, group) or "none") == value]
     return render(request, "work.html", d=data, tags=tags, today=data["today"], author=author, authors=all_authors,
-                  period=period, date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "")
+                  period=period, date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "",
+                  country=country, countries=all_countries)
 
 
 def _back(request: Request, default: str) -> str:
@@ -389,10 +409,12 @@ def export(request: Request):
     buf.write("﻿")  # чтобы Excel открыл UTF-8 с кириллицей
     w = csv.writer(buf, delimiter=";")
     w.writerow(["ID", "Имя", "Должность", "Компания", "Телефоны", "Email", "Сайт", "Адрес", "Страна",
-                "Соцсети", "О контакте", "Пол", "Тип", "Температура", "Откуда", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
+                "Соцсети", "О контакте", "Страна (определена)", "Пол", "Тип", "Температура", "Откуда", "Статус", "Добавил", "Дата", "Сводка", "Заметки"])
     for c in cards:
         w.writerow([c.code, c.full_name, c.position, c.company, "\n".join(c.phones or []), "\n".join(c.emails or []),
-                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about, GENDERS.get(c.gender, "").split(" ", 1)[-1],
+                    c.website, c.address, c.country, "\n".join(c.socials or []), c.about,
+                    countries.NAMES.get(c.country_info[0], "") + (" (по номеру)" if c.country_info[1] == "phone" else ""),
+                    GENDERS.get(c.gender, "").split(" ", 1)[-1],
                     *[TAG_GROUPS[g][1].get(getattr(c, g), "") for g in TAG_GROUPS], STATUSES.get(c.status, c.status),
                     c.created_by, _dt(c.created_at, "%d.%m.%Y"), c.summary, "\n".join(notes.get(c.id, []))])
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",

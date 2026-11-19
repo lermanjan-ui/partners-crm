@@ -925,3 +925,42 @@ def test_filter_by_added_date(env):
     with SessionLocal() as s:
         cid = s.query(Card).filter_by(full_name="Добавлен вчера").one().id
     assert "📅 Добавлен <b>" in client.get(f"/c/{cid}").text
+
+
+def test_country_resolution():
+    from app import countries as co
+    c = Card(country="United Kingdom")
+    assert c.country_info == ("GB", "country") and c.country_label == "🇬🇧 Великобритания"
+    assert Card(country="UK").country_info[0] == "GB" and Card(country="Великобритания").country_info[0] == "GB"
+    assert Card(address="Maia, Portugal").country_info == ("PT", "address")
+    assert Card(address="London").country_info == ("GB", "address")
+    assert Card(address="Лондон, Англия, Соединенное Королевство").country_info[0] == "GB"
+    assert Card(phones=["+447539049424"]).country_info == ("GB", "phone")
+    assert Card(phones=["+998901234567"]).country_info == ("UZ", "phone")
+    assert Card(phones=["+77011234567"]).country_info[0] == "KZ" and Card(phones=["+79161234567"]).country_info[0] == "RU"
+    assert Card(phones=["+12145583809"]).country_label == "🇺🇸🇨🇦 США/Канада"
+    assert Card(phones=["90 123 45 67"]).country_info == (None, None)  # без кода страны — не угадываем
+    assert Card(socials=["WhatsApp: +353860348480"]).country_info == ("IE", "phone")
+    assert Card(country="Portugal", phones=["+44 1"]).country_info == ("PT", "country")  # явная страна важнее номера
+    assert Card(address="Rua Augusta 10, 1100 Lisboa").country_info[0] == "PT"
+    assert co.from_text("Rua Augusta 10") is None
+
+
+def test_country_filter(env):
+    client, _ = env
+    with SessionLocal() as s:
+        s.add_all([Card(full_name="Из Португалии", address="Maia, Portugal", ball="us"),
+                   Card(full_name="Британец по номеру", phones=["+447700900123"]),
+                   Card(full_name="Без страны")])
+        s.commit()
+        pt_id = s.query(Card).filter_by(full_name="Из Португалии").one().id
+        gb_id = s.query(Card).filter_by(full_name="Британец по номеру").one().id
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get("/?country=PT").text
+    assert "Из Португалии" in page and "Британец по номеру" not in page and "🇵🇹 Португалия (" in page
+    page = client.get("/?country=GB").text
+    assert "Британец по номеру" in page and "· по номеру" in page
+    assert "Без страны" in client.get("/?country=none").text and "Из Португалии" not in client.get("/?country=none").text
+    assert "Из Португалии" in client.get("/work?country=PT").text
+    assert "по коду телефона" in client.get(f"/c/{gb_id}").text and "— по адресу" in client.get(f"/c/{pt_id}").text
+    assert "Великобритания (по номеру)" in client.get("/export.csv").text

@@ -127,6 +127,22 @@ class Card(Base):
         return changed
 
     @property
+    def country_info(self) -> tuple[str | None, str | None]:
+        """(код страны, откуда: country | address | phone) — см. countries.resolve."""
+        from .countries import resolve
+        key = (self.country, self.address, tuple(self.phones or []), tuple(self.socials or []))
+        cached = self.__dict__.get("_country_cache")
+        if cached is None or cached[0] != key:  # кэш на время запроса; пересчёт, если поля поменялись
+            cached = (key, resolve(self))
+            self.__dict__["_country_cache"] = cached
+        return cached[1]
+
+    @property
+    def country_label(self) -> str:
+        from .countries import label
+        return label(self.country_info[0])
+
+    @property
     def gender_icon(self) -> str:
         return {"male": "👨", "female": "👩"}.get(self.gender, "")
 

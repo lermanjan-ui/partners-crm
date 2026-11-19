@@ -18,6 +18,11 @@
     {% for k, v in GENDERS.items() %}<option value="{{ k }}" {% if gender == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
     <option value="none" {% if gender == 'none' %}selected{% endif %}>{{ GENDER_UNKNOWN }}</option>
   </select>
+  <select name="country" onchange="this.form.submit()">
+    <option value="">Страна: все</option>
+    {% for code, label, n in countries %}<option value="{{ code }}" {% if country == code %}selected{% endif %}>{{ label }} ({{ n }})</option>{% endfor %}
+    <option value="none" {% if country == 'none' %}selected{% endif %}>Страна: не указана</option>
+  </select>
   <select name="author" onchange="this.form.submit()">
     <option value="">Добавил: все</option>
     {% for a in authors %}<option value="{{ a }}" {% if author == a %}selected{% endif %}>{{ a }}</option>{% endfor %}
@@ -49,6 +54,7 @@
     <span class="main">
       <b>{{ c.title }}</b> {{ c.gender_icon }} <span class="muted">{{ c.code }}</span><br>
       <span>{{ c.position or '' }}{% if c.position and c.company and c.company != c.title %} · {% endif %}{% if c.company != c.title %}{{ c.company or '' }}{% endif %}</span>
+      {% set cc = c.country_info %}{% if cc[0] %}<span class="sumline">{{ c.country_label }}{% if cc[1] == 'phone' %} · по номеру{% endif %}</span>{% endif %}
       {% if c.summary %}<span class="sumline">{{ c.summary|replace('\n', ' · ')|truncate(160) }}</span>{% endif %}
     </span>
     <span class="contacts">
