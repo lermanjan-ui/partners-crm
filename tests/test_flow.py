@@ -822,3 +822,18 @@ def test_work_untriaged_list_import_and_filters(env):
     client.post("/login", data={"username": "anna", "password": "pw"})
     page = client.get("/work?temp=hot").text
     assert "Горячий без шага" in page and "Холодный из списка" not in page
+
+
+def test_filter_by_author(env):
+    client, _ = env
+    with SessionLocal() as s:
+        s.add_all([Card(full_name="Контакт Жени", created_by="Jane", ball="us", next_step="позвонить"),
+                   Card(full_name="Контакт коллеги", created_by="Surnik", ball="us", next_step="написать")])
+        s.commit()
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    page = client.get("/?author=Jane").text
+    assert "Контакт Жени" in page and "Контакт коллеги" not in page
+    assert '<option value="Surnik"' in page and "👤 Jane" in page
+    work_page = client.get("/work?author=Surnik").text
+    assert "Контакт коллеги" in work_page and "Контакт Жени" not in work_page
+    assert "Контакт коллеги" in client.get("/?author=Surnik&q=Контакт").text

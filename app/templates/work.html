@@ -4,7 +4,7 @@
   <div class="witem {% if c.due and c.ball == 'us' and c.due < today %}overdue{% endif %}">
     <a class="t" href="/c/{{ c.id }}">{{ c.title }}</a> <span class="muted">{{ c.code }}</span>
     {% for g in ('temp', 'kind') %}{% if c[g] %}<span class="tag t-{{ c[g] }}">{{ TAG_GROUPS[g][1][c[g]] }}</span>{% endif %}{% endfor %}
-    {% if c.company and c.company != c.title %}<div class="muted small">{{ c.company }}</div>{% endif %}
+    <div class="muted small">{% if c.company and c.company != c.title %}{{ c.company }} · {% endif %}👤 {{ c.created_by or '—' }}</div>
     {% if c.next_step %}<div class="step">🎯 {{ c.next_step }}</div>{% endif %}
     {% if mode == 'us' and c.due %}<div class="small {% if c.due < today %}red{% endif %}">📅 {% if c.due < today %}просрочено {{ (today - c.due).days }} дн. ({{ fmt_due(c.due, today) }}){% else %}{{ fmt_due(c.due, today) }}{% endif %}</div>{% endif %}
     {% if mode == 'them' and followup_date(c) %}<div class="small muted">⏳ вернётся к нам {{ fmt_due(followup_date(c), today) }}</div>{% endif %}
@@ -29,6 +29,10 @@
     {% for k, v in values.items() %}<option value="{{ k }}" {% if tags[g] == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
   </select>
   {% endfor %}
+  <select name="author" onchange="this.form.submit()">
+    <option value="">Добавил: все</option>
+    {% for a in authors %}<option value="{{ a }}" {% if author == a %}selected{% endif %}>{{ a }}</option>{% endfor %}
+  </select>
 </form>
 {% set us = d.overdue + d.due_today + d.later %}
 <div class="board">

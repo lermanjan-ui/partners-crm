@@ -69,9 +69,19 @@ def logout(request: Request):
     return RedirectResponse("/login", 303)
 
 
+def authors(s) -> list[str]:
+    return sorted({a for (a,) in s.execute(select(Card.created_by).distinct()) if a}, key=str.lower)
+
+
+def by_author(cards: list, author: str) -> list:
+    if author == "none":
+        return [c for c in cards if not c.created_by]
+    return [c for c in cards if c.created_by == author] if author else cards
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = "",
-          batch: str = ""):
+          batch: str = "", author: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with SessionLocal() as s:
@@ -80,6 +90,8 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
             cards = [c for c in cards if c.status == status]
         if batch:
             cards = [c for c in cards if c.batch == batch]
+        cards = by_author(cards, author)
+        all_authors = authors(s)
         for group, value in tags.items():
             if value == "none":
                 cards = [c for c in cards if not getattr(c, group)]
@@ -89,22 +101,24 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
         thumbs = dict(s.execute(select(Attachment.card_id, func.min(Attachment.id))
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
     return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs,
-                  batch=batch)
+                  batch=batch, author=author, authors=all_authors)
 
 
 @router.get("/work", response_class=HTMLResponse)
-def work_page(request: Request, kind: str = "", temp: str = "", channel: str = ""):
+def work_page(request: Request, kind: str = "", temp: str = "", channel: str = "", author: str = ""):
     user_of(request)
     tags = {"kind": kind, "temp": temp, "channel": channel}
     with crm.LOCK, SessionLocal() as s:
         if work.expire_waiting(s):
             s.commit()
         data = work.todo(s)
+        all_authors = authors(s)
     for key in ("overdue", "due_today", "later", "waiting", "none", "untriaged"):
+        data[key] = by_author(data[key], author)
         for group, value in tags.items():
             if value:
                 data[key] = [c for c in data[key] if (getattr(c, group) or "none") == value]
-    return render(request, "work.html", d=data, tags=tags, today=data["today"])
+    return render(request, "work.html", d=data, tags=tags, today=data["today"], author=author, authors=all_authors)
 
 
 def _back(request: Request, default: str) -> str:
