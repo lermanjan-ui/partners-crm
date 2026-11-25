@@ -1,0 +1,49 @@
+{# Фильтры с множественным выбором — общие для списка контактов и страницы «Работа». #}
+{% for d in defs %}{% set chosen = sel.get(d.key, []) %}
+<details class="ms {% if chosen %}on{% endif %}">
+  <summary>{{ filter_summary(d, chosen) }}</summary>
+  <div class="ms-panel">
+    {% for v, label in d.options %}
+    <label class="ms-opt"><input type="checkbox" name="{{ d.key }}" value="{{ v }}" {% if v in chosen %}checked{% endif %}><span>{{ label }}</span></label>
+    {% else %}<span class="muted small">Пока нет значений</span>{% endfor %}
+    <div class="ms-acts">
+      <button type="button" class="link ms-clear">Очистить</button>
+      <button class="btn">Готово</button>
+    </div>
+  </div>
+</details>
+{% endfor %}
+<div class="datebar">
+  <span class="muted small">Добавлены:</span>
+  {% for k, label in PERIODS.items() %}<button class="chip {% if period == k %}on{% endif %}" name="period" value="{{ k }}">{{ label }}</button>{% endfor %}
+  <label class="small">с <input type="date" name="date_from" value="{{ date_from }}" onchange="this.form.submit()"></label>
+  <label class="small">по <input type="date" name="date_to" value="{{ date_to }}" onchange="this.form.submit()"></label>
+  {% if period or date_from or date_to %}<a class="small" href="?{% for k, v in request.query_params.multi_items() %}{% if k not in ('period', 'date_from', 'date_to') %}{{ k }}={{ v|urlencode }}&{% endif %}{% endfor %}">× сбросить даты</a>{% endif %}
+  {% if sel or period or date_from or date_to %}<a class="small" href="?{% if request.query_params.get('batch') %}batch={{ request.query_params.get('batch')|urlencode }}{% endif %}">× сбросить все фильтры</a>{% endif %}
+</div>
+<script>
+(function () {
+  function state(d) { return Array.prototype.map.call(d.querySelectorAll('input:checked'), function (i) { return i.value; }).join(','); }
+  var all = document.querySelectorAll('details.ms');
+  all.forEach(function (d) {
+    d.addEventListener('toggle', function () {
+      if (d.open) {
+        all.forEach(function (o) { if (o !== d) o.open = false; });  // открыт только один список
+        var panel = d.querySelector('.ms-panel');
+        panel.classList.remove('right');
+        if (panel.getBoundingClientRect().right > window.innerWidth - 8) panel.classList.add('right');  // не вылезать за экран
+        d.dataset.before = state(d);
+      } else if (d.dataset.before !== undefined && state(d) !== d.dataset.before) {
+        d.closest('form').submit();  // закрыли список с изменениями — применяем
+      }
+    });
+    d.querySelector('.ms-clear').addEventListener('click', function () {
+      d.querySelectorAll('input:checked').forEach(function (i) { i.checked = false; });
+      d.closest('form').submit();
+    });
+  });
+  document.addEventListener('click', function (e) {
+    all.forEach(function (d) { if (d.open && !d.contains(e.target)) d.open = false; });
+  });
+})();
+</script>

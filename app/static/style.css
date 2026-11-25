@@ -105,7 +105,26 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 @media (prefers-color-scheme: dark) { .tag.stage { background: #2b2350; color: #c9b8ff; } }
 .listhead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0 8px; }
 .sortform label { margin: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
-.sortform select { width: auto; }
+.sortform select { width: auto; max-width: 62vw; }
+details.ms { position: relative; }
+details.ms > summary { list-style: none; cursor: pointer; padding: 8px 30px 8px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; position: relative; }
+details.ms > summary::-webkit-details-marker { display: none; }
+details.ms > summary::after { content: "▾"; position: absolute; right: 10px; color: var(--muted); }
+details.ms.on > summary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.ms-panel { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; min-width: 240px; max-width: min(340px, calc(100vw - 32px));
+  max-height: 360px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+.ms-opt { display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 4px; color: var(--text); font-size: 14px; cursor: pointer; border-radius: 6px; }
+.ms-opt:hover { background: var(--bg); }
+.ms-opt input[type=checkbox] { width: 16px; height: 16px; flex: 0 0 16px; margin: 0; padding: 0; }
+.ms-opt span { flex: 1 1 auto; white-space: normal; }
+.ms-panel.right { left: auto; right: 0; }
+.ms-acts { display: flex; justify-content: space-between; align-items: center; position: sticky; bottom: -8px; background: var(--panel);
+  padding-top: 8px; margin-top: 4px; border-top: 1px solid var(--line); }
+.ms-acts .btn { padding: 6px 14px; }
+@media (max-width: 600px) { details.ms { flex: 1 1 45%; } details.ms > summary { max-width: none; }
+  details.ms:nth-of-type(even) .ms-panel { left: auto; right: 0; } }
 pre { white-space: pre-wrap; font: 13px/1.4 ui-monospace, monospace; }
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }

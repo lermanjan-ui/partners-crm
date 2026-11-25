@@ -97,12 +97,6 @@ def by_added(cards: list, start, end) -> list:
     return cards
 
 
-def by_country(cards: list, country: str) -> list:
-    if country == "none":
-        return [c for c in cards if not c.country_info[0]]
-    return [c for c in cards if c.country_info[0] == country] if country else cards
-
-
 def country_options(cards: list) -> list[tuple[str, str, int]]:
     """Страны, которые есть в базе: (код, «🇬🇧 Великобритания», сколько контактов) — по убыванию."""
     counts: dict[str, int] = {}
@@ -111,13 +105,6 @@ def country_options(cards: list) -> list[tuple[str, str, int]]:
         if code:
             counts[code] = counts.get(code, 0) + 1
     return sorted(((k, countries.label(k), n) for k, n in counts.items()), key=lambda x: (-x[2], x[1]))
-
-
-def by_stage(cards: list, stage: str) -> list:
-    """Инвесторы, у которых среди стадий есть выбранная; «none» — инвесторы без отмеченных стадий."""
-    if stage == "none":
-        return [c for c in cards if c.kind == "investor" and not c.stages]
-    return [c for c in cards if stage in (c.stages or [])] if stage else cards
 
 
 SORTS = {
@@ -177,36 +164,72 @@ def sort_cards(cards: list, sort: str, counts: dict, activity: dict) -> list:
     return sorted(cards, key=keys.get(sort, keys["new"]))
 
 
-def by_author(cards: list, author: str) -> list:
-    if author == "none":
-        return [c for c in cards if not c.created_by]
-    return [c for c in cards if c.created_by == author] if author else cards
+def filter_defs(s) -> list[dict]:
+    """Все фильтры списка и страницы «Работа». В каждом можно выбрать несколько значений:
+    внутри фильтра — «или», между фильтрами — «и». Значение none — «не задано»."""
+    all_cards = list(s.scalars(select(Card)))
+    defs = [
+        {"key": "status", "title": "Статус", "options": list(STATUSES.items()), "get": lambda c: c.status},
+        *[{"key": g, "title": title, "options": [*values.items(), ("none", "не задано")], "get": (lambda g: lambda c: getattr(c, g))(g)}
+          for g, (title, values) in TAG_GROUPS.items()],
+        {"key": "gender", "title": "Пол", "options": [*GENDERS.items(), ("none", GENDER_UNKNOWN)], "get": lambda c: c.gender},
+        {"key": "country", "title": "Страна",
+         "options": [(code, f"{label} ({n})") for code, label, n in country_options(all_cards)] + [("none", "не указана")],
+         "get": lambda c: c.country_info[0]},
+        {"key": "stage", "title": "Стадия", "options": [*STAGES.items(), ("none", "инвестор без стадии")],
+         "match": lambda c, sel: bool(sel & set(c.stages or [])) or ("none" in sel and c.kind == "investor" and not c.stages)},
+        {"key": "author", "title": "Добавил", "options": [(a, a) for a in authors(s)] + [("none", "не указано")],
+         "get": lambda c: c.created_by},
+    ]
+    return defs
+
+
+def selected_filters(request: Request, defs: list[dict]) -> dict[str, set]:
+    sel = {}
+    for d in defs:
+        allowed = {v for v, _ in d["options"]}
+        values = {v for v in request.query_params.getlist(d["key"]) if v in allowed}
+        if values:
+            sel[d["key"]] = values
+    return sel
+
+
+def apply_filters(cards: list, defs: list[dict], sel: dict[str, set]) -> list:
+    for d in defs:
+        values = sel.get(d["key"])
+        if not values:
+            continue
+        if "match" in d:
+            cards = [c for c in cards if d["match"](c, values)]
+        else:
+            cards = [c for c in cards if (d["get"](c) or "none") in values]
+    return cards
+
+
+def filter_summary(d: dict, values: set) -> str:
+    labels = [label for v, label in d["options"] if v in values]
+    if not labels:
+        return f"{d['title']}: все"
+    shown = ", ".join(labels[:2])
+    return f"{d['title']}: {shown}" + (f" +{len(labels) - 2}" if len(labels) > 2 else "")
+
+
+templates.env.globals["filter_summary"] = filter_summary
 
 
 @router.get("/", response_class=HTMLResponse)
-def index(request: Request, q: str = "", status: str = "", kind: str = "", temp: str = "", channel: str = "",
-          batch: str = "", author: str = "", gender: str = "", period: str = "", date_from: str = "",
-          date_to: str = "", country: str = "", stage: str = "", sort: str = ""):
+def index(request: Request, q: str = "", batch: str = "", period: str = "", date_from: str = "", date_to: str = "",
+          sort: str = ""):
     user_of(request)
-    tags = {"kind": kind, "temp": temp, "channel": channel}
     with SessionLocal() as s:
+        defs = filter_defs(s)
+        sel = selected_filters(request, defs)
         cards = crm.search(s, q, limit=10_000) if q else list(s.scalars(select(Card).order_by(Card.created_at.desc())))
-        if status:
-            cards = [c for c in cards if c.status == status]
         if batch:
             cards = [c for c in cards if c.batch == batch]
-        all_countries = country_options(list(s.scalars(select(Card))))
-        cards = by_stage(by_country(by_author(cards, author), country), stage)
+        cards = apply_filters(cards, defs, sel)
         start, end = date_range(period, date_from, date_to)
         cards = by_added(cards, start, end)
-        if gender:
-            cards = [c for c in cards if (c.gender or "none") == gender]
-        all_authors = authors(s)
-        for group, value in tags.items():
-            if value == "none":
-                cards = [c for c in cards if not getattr(c, group)]
-            elif value:
-                cards = [c for c in cards if getattr(c, group) == value]
         counts = dict(s.execute(select(Note.card_id, func.count()).group_by(Note.card_id)).all())
         # сортировка запоминается для этого входа (сессия), пока не выберут другую
         if sort in SORTS:
@@ -216,34 +239,26 @@ def index(request: Request, q: str = "", status: str = "", kind: str = "", temp:
         cards = sort_cards(cards, sort, counts, activity)
         thumbs = dict(s.execute(select(Attachment.card_id, func.min(Attachment.id))
                                 .where(Attachment.kind == "card").group_by(Attachment.card_id)).all())
-    return render(request, "index.html", cards=cards, q=q, status=status, tags=tags, counts=counts, thumbs=thumbs,
-                  batch=batch, author=author, authors=all_authors, gender=gender, period=period,
-                  country=country, countries=all_countries, stage=stage, sort=sort, SORTS=SORTS,
-                  activity=activity, completeness=completeness,
-                  today=work.today(),
+    return render(request, "index.html", cards=cards, q=q, counts=counts, thumbs=thumbs, batch=batch,
+                  defs=defs, sel=sel, period=period, sort=sort, SORTS=SORTS, activity=activity,
+                  completeness=completeness, today=work.today(),
                   date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "")
 
 
 @router.get("/work", response_class=HTMLResponse)
-def work_page(request: Request, kind: str = "", temp: str = "", channel: str = "", author: str = "", period: str = "",
-              date_from: str = "", date_to: str = "", country: str = "", stage: str = ""):
+def work_page(request: Request, period: str = "", date_from: str = "", date_to: str = ""):
     user_of(request)
-    tags = {"kind": kind, "temp": temp, "channel": channel}
     with crm.LOCK, SessionLocal() as s:
         if work.expire_waiting(s):
             s.commit()
         data = work.todo(s)
-        all_authors = authors(s)
-        all_countries = country_options(list(s.scalars(select(Card))))
+        defs = filter_defs(s)
+    sel = selected_filters(request, defs)
     start, end = date_range(period, date_from, date_to)
     for key in ("overdue", "due_today", "later", "waiting", "none", "untriaged"):
-        data[key] = by_stage(by_country(by_added(by_author(data[key], author), start, end), country), stage)
-        for group, value in tags.items():
-            if value:
-                data[key] = [c for c in data[key] if (getattr(c, group) or "none") == value]
-    return render(request, "work.html", d=data, tags=tags, today=data["today"], author=author, authors=all_authors,
-                  period=period, date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "",
-                  country=country, countries=all_countries, stage=stage)
+        data[key] = by_added(apply_filters(data[key], defs, sel), start, end)
+    return render(request, "work.html", d=data, today=data["today"], defs=defs, sel=sel, period=period,
+                  date_from=start.isoformat() if start else "", date_to=end.isoformat() if end else "")
 
 
 def _back(request: Request, default: str) -> str:

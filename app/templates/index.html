@@ -2,45 +2,10 @@
 {% block content %}
 <form class="filters" method="get">
   <input name="q" value="{{ q }}" placeholder="Поиск: имя, компания, телефон, email, текст визитки" type="search">
-  <select name="status" onchange="this.form.submit()">
-    <option value="">Все статусы</option>
-    {% for k, v in STATUSES.items() %}<option value="{{ k }}" {% if k == status %}selected{% endif %}>{{ v }}</option>{% endfor %}
-  </select>
-  {% for g, (title, values) in TAG_GROUPS.items() %}
-  <select name="{{ g }}" onchange="this.form.submit()">
-    <option value="">{{ title }}: все</option>
-    {% for k, v in values.items() %}<option value="{{ k }}" {% if tags[g] == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
-    <option value="none" {% if tags[g] == 'none' %}selected{% endif %}>{{ title }}: не задано</option>
-  </select>
-  {% endfor %}
-  <select name="gender" onchange="this.form.submit()">
-    <option value="">Пол: все</option>
-    {% for k, v in GENDERS.items() %}<option value="{{ k }}" {% if gender == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
-    <option value="none" {% if gender == 'none' %}selected{% endif %}>{{ GENDER_UNKNOWN }}</option>
-  </select>
-  <select name="country" onchange="this.form.submit()">
-    <option value="">Страна: все</option>
-    {% for code, label, n in countries %}<option value="{{ code }}" {% if country == code %}selected{% endif %}>{{ label }} ({{ n }})</option>{% endfor %}
-    <option value="none" {% if country == 'none' %}selected{% endif %}>Страна: не указана</option>
-  </select>
-  <select name="stage" onchange="this.form.submit()">
-    <option value="">Стадия: все</option>
-    {% for k, v in STAGES.items() %}<option value="{{ k }}" {% if stage == k %}selected{% endif %}>💰 {{ v }}</option>{% endfor %}
-    <option value="none" {% if stage == 'none' %}selected{% endif %}>💰 Инвестор, стадия не указана</option>
-  </select>
-  <select name="author" onchange="this.form.submit()">
-    <option value="">Добавил: все</option>
-    {% for a in authors %}<option value="{{ a }}" {% if author == a %}selected{% endif %}>{{ a }}</option>{% endfor %}
-  </select>
   {% if batch %}<input type="hidden" name="batch" value="{{ batch }}">{% endif %}
+  {% if request.query_params.get('sort') %}<input type="hidden" name="sort" value="{{ request.query_params.get('sort') }}">{% endif %}
   <button class="btn">Найти</button>
-<div class="datebar">
-  <span class="muted small">Добавлены:</span>
-  {% for k, label in PERIODS.items() %}<button class="chip {% if period == k %}on{% endif %}" name="period" value="{{ k }}">{{ label }}</button>{% endfor %}
-  <label class="small">с <input type="date" name="date_from" value="{{ date_from }}" onchange="this.form.submit()"></label>
-  <label class="small">по <input type="date" name="date_to" value="{{ date_to }}" onchange="this.form.submit()"></label>
-  {% if period or date_from or date_to %}<a class="small" href="?{% for k in ['q','status','kind','temp','channel','author','gender','batch'] %}{% if request.query_params.get(k) %}{{ k }}={{ request.query_params.get(k)|urlencode }}&{% endif %}{% endfor %}">× сбросить даты</a>{% endif %}
-</div>
+  {% include "_filters.html" %}
 </form>
 {% if batch %}
 <div class="panel batchbar">

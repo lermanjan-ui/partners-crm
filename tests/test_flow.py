@@ -846,7 +846,7 @@ def test_filter_by_author(env):
     client.post("/login", data={"username": "anna", "password": "pw"})
     page = client.get("/?author=Jane").text
     assert "Контакт Жени" in page and "Контакт коллеги" not in page
-    assert '<option value="Surnik"' in page and "👤 Jane" in page
+    assert 'name="author" value="Surnik"' in page and "👤 Jane" in page
     work_page = client.get("/work?author=Surnik").text
     assert "Контакт коллеги" in work_page and "Контакт Жени" not in work_page
     assert "Контакт коллеги" in client.get("/?author=Surnik&q=Контакт").text
@@ -1149,3 +1149,41 @@ def test_sorting(env):
     client.get("/?sort=old")
     assert 'value="old" selected' in client.get("/").text
     assert len(SORTS) == 10
+
+
+def test_multi_select_filters(env):
+    client, _ = env
+    with SessionLocal() as s:
+        s.add_all([
+            Card(full_name="MS мужчина горячий PT", gender="male", temp="hot", address="Porto, Portugal", status="new",
+                 kind="investor", stages=["seed"], created_by="Jane", ball="us"),
+            Card(full_name="MS женщина тёплая GB", gender="female", temp="warm", address="London", status="agreed",
+                 kind="investor", stages=["unicorn"], created_by="Surnik", ball="us"),
+            Card(full_name="MS неизвестный холодный", temp="cold", status="rejected", kind="partner", created_by="Jane"),
+        ])
+        s.commit()
+    client.post("/login", data={"username": "anna", "password": "pw"})
+
+    def names(url):
+        page = client.get(url).text
+        return {n for n in ("MS мужчина", "MS женщина", "MS неизвестный") if n in page}
+
+    assert names("/?q=MS&gender=male&gender=female") == {"MS мужчина", "MS женщина"}
+    assert names("/?q=MS&gender=male&gender=none") == {"MS мужчина", "MS неизвестный"}
+    assert names("/?q=MS&temp=hot&temp=cold") == {"MS мужчина", "MS неизвестный"}
+    assert names("/?q=MS&country=PT&country=GB") == {"MS мужчина", "MS женщина"}
+    assert names("/?q=MS&stage=seed&stage=unicorn") == {"MS мужчина", "MS женщина"}
+    assert names("/?q=MS&status=agreed&status=rejected") == {"MS женщина", "MS неизвестный"}
+    assert names("/?q=MS&author=Jane&author=Surnik") == {"MS мужчина", "MS женщина", "MS неизвестный"}
+    # между фильтрами — «и»
+    assert names("/?q=MS&gender=male&gender=female&temp=warm") == {"MS женщина"}
+    assert names("/?q=MS&gender=bogus") == {"MS мужчина", "MS женщина", "MS неизвестный"}  # чужое значение игнорируется
+    page = client.get("/?q=MS&gender=male&gender=female").text
+    assert "Пол: 👨 Мужчина, 👩 Женщина" in page
+    assert 'name="gender" value="male" checked' in page and 'name="gender" value="female" checked' in page
+    assert "× сбросить все фильтры" in page
+    # сортировка сохраняет все выбранные значения
+    assert '<input type="hidden" name="gender" value="male">' in page and '<input type="hidden" name="gender" value="female">' in page
+    # страница «Работа»
+    work_names = {n for n in ("MS мужчина", "MS женщина") if n in client.get("/work?temp=hot&temp=warm&gender=female").text}
+    assert work_names == {"MS женщина"}
