@@ -220,6 +220,7 @@ class Note(Base):
     __tablename__ = "notes"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     card_id: Mapped[int | None] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), index=True)
+    program_id: Mapped[int | None] = mapped_column(ForeignKey("programs.id", ondelete="CASCADE"), index=True)
     text: Mapped[str | None] = mapped_column(Text)
     prev_text: Mapped[str | None] = mapped_column(Text)  # прошлая версия при редактировании в Telegram
     transcript: Mapped[str | None] = mapped_column(Text)  # полная расшифровка голосового
@@ -248,13 +249,101 @@ class TgLink(Base):
     message_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     card_id: Mapped[int | None] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), index=True)
     note_id: Mapped[int | None] = mapped_column(ForeignKey("notes.id", ondelete="CASCADE"), index=True)
-    kind: Mapped[str] = mapped_column(String(20))  # card | note | bot | ask | search
+    program_id: Mapped[int | None] = mapped_column(ForeignKey("programs.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # card | note | bot | ask | search | step | program
 
 
 class ProcessedUpdate(Base):
     __tablename__ = "tg_updates"
     update_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ---------- Программы: акселераторы, инкубаторы, гранты ----------
+
+PROGRAM_STATUSES = {"idea": "💡 Рассматриваем", "preparing": "✍️ Готовим", "submitted": "📤 Подано",
+                    "next": "🎤 Следующий этап", "accepted": "✅ Приняли", "rejected": "❌ Отказ", "skipped": "⏭ Пропустили"}
+PROGRAM_OPEN = ("idea", "preparing")  # по ним идут напоминания о дедлайне
+FORMATS = {"online": "🌐 Онлайн", "offline": "🏢 Офлайн", "hybrid": "🔀 Гибрид"}
+
+
+class Program(Base):
+    __tablename__ = "programs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(300))
+    country: Mapped[str | None] = mapped_column(String(100))
+    city: Mapped[str | None] = mapped_column(String(100))
+    deadline_date: Mapped[date | None] = mapped_column(Date, index=True)   # как у организатора
+    deadline_time: Mapped[str | None] = mapped_column(String(5))           # «23:59»; пусто — конец дня
+    deadline_tz: Mapped[str | None] = mapped_column(String(50))            # IANA, например Europe/Lisbon
+    status: Mapped[str] = mapped_column(String(20), default="idea")
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    submitted_by: Mapped[str | None] = mapped_column(String(100))
+    # условия
+    funding: Mapped[str | None] = mapped_column(String(200))      # «$100k», «грант €50k»
+    equity: Mapped[str | None] = mapped_column(String(100))       # «7%», «без доли»
+    fee: Mapped[str | None] = mapped_column(String(100))          # стоимость участия
+    duration: Mapped[str | None] = mapped_column(String(100))
+    format: Mapped[str | None] = mapped_column(String(10))        # online | offline | hybrid
+    stages: Mapped[list | None] = mapped_column(JSON)              # для каких стадий стартапа (STAGES)
+    # ключевые даты
+    results_date: Mapped[date | None] = mapped_column(Date)
+    start_date: Mapped[date | None] = mapped_column(Date)
+    demo_day: Mapped[date | None] = mapped_column(Date)
+    links: Mapped[list | None] = mapped_column(JSON)               # [{"label", "url"}]
+    checklist: Mapped[list | None] = mapped_column(JSON)           # [{"text", "done"}]
+    description: Mapped[str | None] = mapped_column(Text)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    needs_review: Mapped[bool] = mapped_column(default=False)      # заполнено ИИ по ссылке — проверить
+    reminders_sent: Mapped[list | None] = mapped_column(JSON)      # [10, 3, 1] — какие напоминания уже ушли
+    repeated_from: Mapped[int | None] = mapped_column(Integer)
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+    @property
+    def code(self) -> str:
+        return f"#A{self.id}"
+
+    @property
+    def country_code(self) -> str | None:
+        from .countries import from_text
+        return from_text(self.country) or from_text(self.city)
+
+    @property
+    def country_label(self) -> str:
+        from .countries import label
+        return label(self.country_code) or (self.country or "")
+
+    @property
+    def checklist_progress(self) -> tuple[int, int]:
+        items = self.checklist or []
+        return sum(1 for i in items if i.get("done")), len(items)
+
+
+class ProgramContact(Base):
+    __tablename__ = "program_contacts"
+    program_id: Mapped[int] = mapped_column(ForeignKey("programs.id", ondelete="CASCADE"), primary_key=True)
+    card_id: Mapped[int] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), primary_key=True, index=True)
+    role: Mapped[str | None] = mapped_column(String(100))  # «ментор», «порекомендовал»
+
+
+class ProgramFile(Base):
+    """Материалы программы. Один файл (дек) можно привязать к нескольким программам без копий."""
+    __tablename__ = "program_files"
+    program_id: Mapped[int] = mapped_column(ForeignKey("programs.id", ondelete="CASCADE"), primary_key=True)
+    attachment_id: Mapped[int] = mapped_column(ForeignKey("attachments.id", ondelete="CASCADE"), primary_key=True)
+
+
+class Answer(Base):
+    """Банк ответов на типовые вопросы анкет."""
+    __tablename__ = "answers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    question: Mapped[str] = mapped_column(Text)
+    answer_ru: Mapped[str | None] = mapped_column(Text)
+    answer_en: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str | None] = mapped_column(String(100))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class AppState(Base):
@@ -301,7 +390,8 @@ NEW_COLUMNS = {
               "gender": "VARCHAR(10)", "ball": "VARCHAR(10)", "translations": "JSON", "stages": "JSON", "next_step": "TEXT", "due": "DATE", "waiting_since": "TIMESTAMP"},
     "notes": {"transcript": "TEXT", "summary": "TEXT", "ai_status": "VARCHAR(20) DEFAULT 'none'", "ai_error": "TEXT",
               "tags": "JSON", "kind": "VARCHAR(20) DEFAULT 'note'", "touch": "TEXT",
-              "text_ru": "TEXT", "transcript_ru": "TEXT"},
+              "text_ru": "TEXT", "transcript_ru": "TEXT", "program_id": "INTEGER"},
+    "tg_links": {"program_id": "INTEGER"},
 }
 
 
@@ -313,6 +403,8 @@ def migrate(eng=None) -> None:
     pg = eng.dialect.name == "postgresql"
     with eng.begin() as conn:
         for table, cols in NEW_COLUMNS.items():
+            if not insp.has_table(table):  # таблицы ещё нет — create_all создаст её сразу со всеми колонками
+                continue
             have = {c["name"] for c in insp.get_columns(table)}
             for name, ddl in cols.items():
                 if name not in have:

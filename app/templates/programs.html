@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Программы{% endblock %}
+{% macro row(p) %}
+  {% set dl = days_left(p) %}
+  <a class="prow {% if dl is not none and dl <= 10 and dl >= 0 and p.status in ('idea', 'preparing') %}soon{% endif %}" href="/programs/{{ p.id }}">
+    <span class="pmain">
+      <b>{{ p.title }}</b> <span class="muted">{{ p.code }}</span>
+      <span class="small">{{ p.country_label }}{% if p.city %} · {{ p.city }}{% endif %}</span>
+      <span class="small muted">{% for x in [p.funding, p.equity and (p.equity if p.equity.lower().startswith(('без', 'no ')) else 'доля ' ~ p.equity), p.format and FORMATS_SHORT[p.format]] if x %}{{ x }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
+    </span>
+    <span class="pdl {% if dl is not none and dl < 3 and dl >= 0 and p.status in ('idea', 'preparing') %}red{% endif %}">⏰ {{ deadline_text(p) }}</span>
+    <span class="pmeta">
+      <span class="tag ps-{{ p.status }}">{{ PROGRAM_STATUSES[p.status] }}</span>
+      {% set cl = p.checklist_progress %}{% if cl[1] %}<span class="tag">☑️ {{ cl[0] }}/{{ cl[1] }}</span>{% endif %}
+      {% if files.get(p.id) %}<span class="tag">📎 {{ files[p.id] }}</span>{% endif %}
+      {% if p.needs_review %}<span class="tag warn">проверить</span>{% endif %}
+    </span>
+  </a>
+{% endmacro %}
+{% block content %}
+{% include "_ptabs.html" %}
+<form class="filters" method="get">
+  {% include "_filters.html" %}
+</form>
+<p class="muted">Открытых и будущих: {{ items|length }}</p>
+<div class="list">
+  {% for p in items %}{{ row(p) }}{% else %}<p class="muted">Программ пока нет. Нажмите «+ Программа» или отправьте боту <code>/program ссылка</code>.</p>{% endfor %}
+</div>
+{% if past_items %}
+<details class="panel" {% if show_past %}open{% endif %}><summary>Прошедшие дедлайны · {{ past_items|length }}</summary>
+  <div class="list past">{% for p in past_items %}{{ row(p) }}{% endfor %}</div>
+</details>
+{% endif %}
+{% endblock %}

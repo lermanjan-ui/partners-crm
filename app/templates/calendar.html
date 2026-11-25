@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Календарь программ{% endblock %}
+{% block content %}
+{% include "_ptabs.html" %}
+<form class="filters" method="get">
+  <input type="hidden" name="month" value="{{ first.strftime('%Y-%m') }}">
+  {% include "_filters.html" %}
+</form>
+<div class="calhead">
+  <a class="btn ghost" href="?month={{ prev_m.strftime('%Y-%m') }}&{{ qs }}">←</a>
+  <h1>{{ month_name }}</h1>
+  <a class="btn ghost" href="?month={{ next_m.strftime('%Y-%m') }}&{{ qs }}">→</a>
+  <a class="small" href="?{{ qs }}">сегодня</a>
+</div>
+<div class="cal">
+  {% for wd in ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'] %}<div class="calwd">{{ wd }}</div>{% endfor %}
+  {% for week in weeks %}{% for d in week %}
+  <div class="calday {% if d.month != first.month %}other{% endif %} {% if d == today %}today{% endif %}">
+    <div class="calnum">{{ d.day }}</div>
+    {% for e in events.get(d, []) %}
+    <a class="ev ev-{{ e.kind }} ps-{{ e.p.status }} {% if e.kind == 'deadline' and d < today and e.p.status in ('idea', 'preparing') %}missed{% endif %}"
+       href="/programs/{{ e.p.id }}" title="{{ e.p.title }} — {{ PROGRAM_STATUSES[e.p.status] }}">{{ e.icon }} {{ e.p.title }} {{ e.p.country_label.split(' ')[0] if e.p.country_code }}</a>
+    {% endfor %}
+  </div>
+  {% endfor %}{% endfor %}
+</div>
+<p class="muted small">⏰ дедлайн (цвет — статус) · 📣 результаты · 🏁 старт · 🎤 Demo Day. Дедлайн показан в день по ташкентскому времени.</p>
+
+<h2>Ближайшие 60 дней</h2>
+<div class="list">
+  {% for p in upcoming %}
+  <a class="prow" href="/programs/{{ p.id }}"><span class="pmain"><b>{{ p.title }}</b> <span class="small">{{ p.country_label }}</span></span>
+    <span class="pdl">⏰ {{ deadline_text(p) }}</span><span class="pmeta"><span class="tag ps-{{ p.status }}">{{ PROGRAM_STATUSES[p.status] }}</span></span></a>
+  {% else %}<p class="muted">Дедлайнов в ближайшие 60 дней нет.</p>{% endfor %}
+</div>
+
+<details class="panel"><summary>📲 Подписаться в Google / Apple Calendar</summary>
+  <p class="small">Скопируйте ссылку и добавьте её как календарь по ссылке (Google Calendar → «Другие календари» → «+» → «Добавить по URL»; iPhone → Настройки → Календарь → Учётные записи → Подписной календарь). Дедлайны и ключевые даты будут обновляться сами, с напоминанием за 3 дня. Ссылку не пересылайте посторонним: по ней виден список программ.</p>
+  <input readonly value="{{ ics_url }}" onclick="this.select()">
+</details>
+{% endblock %}

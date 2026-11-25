@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Банк ответов{% endblock %}
+{% block content %}
+{% include "_ptabs.html" %}
+<form class="filters" method="get"><input name="q" value="{{ q }}" placeholder="Поиск по вопросам и ответам" type="search"><button class="btn">Найти</button></form>
+<p class="muted small">Типовые вопросы анкет акселераторов и лучшие ответы на них. Кнопка «Копировать» — и вставляйте в форму.</p>
+{% for a in items %}
+<details class="panel answer">
+  <summary><b>{{ a.question }}</b> <span class="muted small">· {{ a.updated_by or '—' }}, {{ a.updated_at|dt('%d.%m.%Y') }}</span></summary>
+  {% for lang, text in [('RU', a.answer_ru), ('EN', a.answer_en)] if text %}
+  <div class="ans"><div class="anshead"><span class="tag">{{ lang }}</span> <span class="muted small">{{ text|length }} симв.</span>
+    <button type="button" class="btn ghost copy" data-text="{{ text }}">Копировать</button></div>
+    <div class="text">{{ text }}</div></div>
+  {% endfor %}
+  <form method="post" action="/answers" class="fields">
+    <input type="hidden" name="aid" value="{{ a.id }}">
+    <label>Вопрос<input name="question" value="{{ a.question }}"></label>
+    <label>Ответ по-русски<textarea name="answer_ru" rows="4">{{ a.answer_ru or '' }}</textarea></label>
+    <label>Ответ по-английски<textarea name="answer_en" rows="4">{{ a.answer_en or '' }}</textarea></label>
+    <button class="btn">Сохранить</button>
+  </form>
+  <form method="post" action="/answers/{{ a.id }}/delete" onsubmit="return confirm('Удалить ответ?')"><button class="link muted">Удалить</button></form>
+</details>
+{% else %}<p class="muted">{% if q %}Ничего не найдено.{% else %}Пока пусто — добавьте первый ответ ниже.{% endif %}</p>{% endfor %}
+<form method="post" action="/answers" class="panel">
+  <b>+ Новый ответ</b>
+  <label>Вопрос<input name="question" placeholder="Describe your product in one sentence" required></label>
+  <label>Ответ по-русски<textarea name="answer_ru" rows="3"></textarea></label>
+  <label>Ответ по-английски<textarea name="answer_en" rows="3"></textarea></label>
+  <button class="btn">Добавить</button>
+</form>
+<script>
+document.querySelectorAll('button.copy').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var done = function () { b.textContent = 'Скопировано ✓'; setTimeout(function () { b.textContent = 'Копировать'; }, 1500); };
+    try { navigator.clipboard.writeText(b.dataset.text).then(done, function () { b.textContent = 'Выделите текст вручную'; }); }
+    catch (e) { b.textContent = 'Выделите текст вручную'; }
+  });
+});
+</script>
+{% endblock %}

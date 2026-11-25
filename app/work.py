@@ -220,19 +220,35 @@ def _set_state(s, key: str, value: str) -> None:
 def tick(tg, lock, at: datetime | None = None) -> bool:
     """Один проход: вернуть просроченные «ждём их»; в 9:00+ по будням — разослать сводку (раз в день).
     Возвращает True, если сводка отправлена."""
+    from . import programs  # здесь, чтобы не было циклического импорта
     at = at or datetime.now(TZ)
     t = at.date()
     with lock, SessionLocal() as s:
         expire_waiting(s, t)
         s.commit()
+        if at.hour >= settings.digest_hour:  # напоминания о дедлайнах программ — в любой день, с утра
+            for p, days in programs.due_reminders(s, at):
+                s.commit()
+                header = (f"⏰ <b>До дедлайна {days} дн.</b>" if days > 1 else
+                          "⏰ <b>Дедлайн завтра!</b>" if days == 1 else "⏰ <b>Дедлайн сегодня!</b>")
+                for chat_id in settings.allowed_ids:
+                    try:
+                        sent = tg.send(chat_id, programs.program_text(s, p, header), buttons=programs.program_buttons(p))
+                        from .crm import link
+                        link(s, chat_id, sent["message_id"], "program", program_id=p.id)
+                    except Exception:  # noqa: BLE001
+                        log.exception("cannot send program reminder to %s", chat_id)
+                s.commit()
         if at.weekday() >= 5 or at.hour < settings.digest_hour or _state(s, "digest_date") == t.isoformat():
             return False
         _set_state(s, "digest_date", t.isoformat())
         s.commit()
         data = todo(s, t)
-        if not (data["overdue"] or data["due_today"] or data["later"] or data["waiting"]):
+        deadlines = programs.deadlines_block(s, t)
+        if not (data["overdue"] or data["due_today"] or data["later"] or data["waiting"] or deadlines):
             return False  # нечего делать — не беспокоим
         text, buttons = todo_message(data, "☀️ Доброе утро! Дела на сегодня")
+        text += deadlines
     for chat_id in settings.allowed_ids:
         try:
             tg.send(chat_id, text, buttons=buttons)

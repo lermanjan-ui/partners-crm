@@ -9,11 +9,12 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import bot, crm, translate, work
+from . import bot, crm, programs, translate, work
 from .config import settings
 from .db import Attachment, Card, Note, SessionLocal, init_db
 from .tg import Telegram
 from .web import LoginRequired, router
+from .web_programs import router as programs_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -32,6 +33,7 @@ app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, max_age=60
                    https_only=settings.public_url.startswith("https://"), same_site="lax")
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 app.include_router(router)
+app.include_router(programs_router)
 
 
 @app.exception_handler(LoginRequired)
@@ -118,3 +120,6 @@ def process(upd: dict) -> None:
             crm.start_fill_card(args[0], args[1], tg)
         elif kind == "list":
             crm.start_list_import(*args, tg)
+        elif kind == "program":
+            url, chat_id, reply_to, author = args
+            crm.spawn(programs.run_from_url, url, chat_id, reply_to, author, tg, crm.LOCK)

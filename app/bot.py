@@ -10,9 +10,10 @@ from datetime import timedelta, timezone
 
 from sqlalchemy import delete, select, update
 
-from . import ai, crm, work
+from . import ai, crm, programs, work
 from .config import settings
-from .db import BALLS, STAGES, TAG_GROUPS, Attachment, Card, ChatMode, MediaGroup, Note, ProcessedUpdate, TgLink, now
+from .db import (BALLS, PROGRAM_STATUSES, STAGES, TAG_GROUPS, Attachment, Card, ChatMode, MediaGroup, Note,
+                 ProcessedUpdate, Program, ProgramFile, TgLink, now)
 from .tg import Telegram, esc
 
 log = logging.getLogger("bot")
@@ -33,6 +34,9 @@ HELP = """<b>Как пользоваться</b>
 
 ⚽ <b>Работа с контактом</b> — под карточкой: 🟢 Наш ход / 🟡 Ждём их / ⚪ Без шага, «☑️ Шаг сделан», «🎯 Новый шаг», «📅 Срок». Проще голосом ответом на карточку: «отправил презентацию, жду ответа до пятницы» — бот сам отметит касание, мяч и срок. Если ответа нет 2 дня — мяч вернётся к вам. Сводка — в 9:00 по будням.
 
+🚀 <b>Программы</b> (акселераторы, инкубаторы, гранты) — /program ссылка: бот прочитает страницу набора и заполнит дедлайн, условия и требования. Напоминания за 10, 3 и 1 день, пока не подано. Ответ на сообщение о программе — заметка, файл — материал.
+
+/programs — ближайшие дедлайны
 /todo — что сделать сейчас
 /new Имя или компания — контакт без визитки
 /list — режим списка участников, /done — выключить"""
@@ -109,6 +113,12 @@ def on_message(s, tg: Telegram, msg: dict) -> list[tuple]:
     who = author_name(user)
     text = (msg.get("text") or msg.get("caption") or "").strip()
     card, reply_link = resolve_reply(s, chat_id, msg.get("reply_to_message"))
+
+    # Ответ на сообщение о программе (акселератор/инкубатор) — заметка или материал к программе.
+    if msg.get("reply_to_message"):
+        plink = s.get(TgLink, (chat_id, msg["reply_to_message"]["message_id"]))
+        if plink and plink.program_id:
+            return on_program_reply(s, tg, msg, who, plink.program_id, text)
 
     # Ответ на просьбу «напишите следующий шаг».
     if reply_link and reply_link.kind == "step" and reply_link.card_id and msg.get("text"):
@@ -234,6 +244,49 @@ def add_note(s, tg, msg, who, card, text, file) -> list[tuple]:
     return [("card", card.id)] if card else []
 
 
+def on_program_reply(s, tg, msg, who, program_id, text) -> list[tuple]:
+    chat_id, mid = msg["chat"]["id"], msg["message_id"]
+    p = s.get(Program, program_id)
+    if p is None:
+        return []
+    f = file_of(msg)
+    if f:
+        obj, kind, mime, name = f
+        if (obj.get("file_size") or 0) > settings.max_file_mb * 1024 * 1024:
+            tg.send(chat_id, f"Файл больше {settings.max_file_mb} МБ — пришлите ссылку (Google Drive, YouTube).", reply_to=mid)
+            return []
+        data = tg.download(obj["file_id"])
+        if kind in ("image", "file") and kind != "voice" and not (mime or "").startswith("audio/"):
+            att = crm.add_attachment(s, None, "material", data, name, mime)
+            s.add(ProgramFile(program_id=p.id, attachment_id=att.id))
+            if text:
+                s.add(Note(program_id=p.id, text=text, author=who, tg_chat_id=chat_id, tg_message_id=mid))
+            sent = tg.send(chat_id, f"📎 Материал добавлен к «{esc(p.title)}»: {esc(name)}", reply_to=mid)
+            crm.link(s, chat_id, sent["message_id"], "program", program_id=p.id)
+            return []
+        att = crm.add_attachment(s, None, kind, data, name, mime)  # голосовое — заметкой с расшифровкой
+        note = Note(program_id=p.id, text=text or None, author=who, tg_chat_id=chat_id, tg_message_id=mid,
+                    attachment_id=att.id, ai_status="processing")
+        s.add(note)
+        s.flush()
+        crm.link(s, chat_id, mid, "program", program_id=p.id)
+        tg.send(chat_id, f"📝 Добавлено к «{esc(p.title)}». 🎙 Расшифровываю…", reply_to=mid)
+        return [("note", note.id)]
+    if not text:
+        return []
+    s.add(Note(program_id=p.id, text=text, author=who, tg_chat_id=chat_id, tg_message_id=mid))
+    crm.link(s, chat_id, mid, "program", program_id=p.id)
+    sent = tg.send(chat_id, f"📝 Добавлено к «{esc(p.title)}»", reply_to=mid)
+    crm.link(s, chat_id, sent["message_id"], "program", program_id=p.id)
+    p.updated_at = now()
+    return []
+
+
+def send_program(s, tg, chat_id, p: Program, header: str | None = None, reply_to=None) -> None:
+    sent = tg.send(chat_id, programs.program_text(s, p, header), reply_to=reply_to, buttons=programs.program_buttons(p))
+    crm.link(s, chat_id, sent["message_id"], "program", program_id=p.id)
+
+
 def on_step_text(s, tg, chat_id, mid, card_id, text) -> list[tuple]:
     card = s.get(Card, card_id)
     if card is None:
@@ -309,9 +362,27 @@ def on_command(s, tg, chat_id, mid, text, who) -> list[tuple]:
         if mode is not None:
             s.delete(mode)
         tg.send(chat_id, "✅ Режим списка выключен. Фото снова считаются визитками.")
+    elif cmd == "/program":
+        url = arg.split()[0] if arg else ""
+        if not url.startswith("http"):
+            tg.send(chat_id, "Пришлите ссылку на страницу набора: <code>/program https://…</code>\n"
+                             "Бот прочитает страницу и заполнит дедлайн, страну, условия и требования.")
+            return []
+        tg.send(chat_id, "🔎 Читаю страницу набора, это до минуты…", reply_to=mid)
+        return [("program", url, chat_id, mid, who)]
+    elif cmd == "/programs":
+        items = programs.upcoming(s, 60)
+        if not items:
+            tg.send(chat_id, "В ближайшие 60 дней дедлайнов нет (или всё уже подано). Добавить: /program ссылка")
+        else:
+            lines = ["🚀 <b>Ближайшие дедлайны программ</b>"]
+            lines += [f"• {esc(p.title)} {p.country_label} — {programs.deadline_text(p)} · {PROGRAM_STATUSES[p.status]}"
+                      for p in items[:15]]
+            tg.send(chat_id, "\n".join(lines), buttons=[[(p.title[:60], f"pp:{p.id}")] for p in items[:15]])
     elif cmd == "/todo":
         with_expired = work.expire_waiting(s)
         text, buttons = work.todo_message(work.todo(s))
+        text += programs.deadlines_block(s)
         if with_expired:
             text += f"\n\n⏰ Только что вернулись к нам (нет ответа): {len(with_expired)}"
         tg.send(chat_id, text, buttons=buttons)
@@ -497,6 +568,36 @@ def on_callback(s, tg, cq: dict) -> list[tuple]:
         except Exception:  # noqa: BLE001 — старое сообщение могло быть удалено; тег уже сохранён
             log.exception("cannot update buttons")
         tg.answer_callback(cq["id"], TAG_GROUPS[group][1][value] if new else "Тег снят")
+        return []
+    elif kind in ("pg", "pgok", "pp"):  # программы: статус, «проверено», показать
+        p = s.get(Program, int(args[0])) if args and args[0].isdigit() else None
+        if p is None:
+            tg.answer_callback(cq["id"], "Не найдено")
+            return []
+        if kind == "pp":
+            tg.answer_callback(cq["id"])
+            send_program(s, tg, chat_id, p)
+            return []
+        if kind == "pgok":
+            p.needs_review = False
+            tg.answer_callback(cq["id"], "Отмечено как проверенное")
+        else:
+            status = args[1] if len(args) > 1 else None
+            if status not in PROGRAM_STATUSES:
+                tg.answer_callback(cq["id"])
+                return []
+            p.status = status
+            if status == "submitted" and not p.submitted_at:
+                p.submitted_at, p.submitted_by = now(), author_name(user)
+            s.add(Note(program_id=p.id, kind="system", source="system", author=author_name(user), ai_status="done",
+                       text=f"Статус: {PROGRAM_STATUSES[status]}"))
+            tg.answer_callback(cq["id"], PROGRAM_STATUSES[status] + (" — напоминаний больше не будет"
+                                                                    if status not in ("idea", "preparing") else ""))
+        p.updated_at = now()
+        try:
+            tg.edit_buttons(chat_id, mid, programs.program_buttons(p))
+        except Exception:  # noqa: BLE001
+            log.exception("cannot update buttons")
         return []
     elif kind == "st":  # стадия инвестирования: включить/выключить (можно несколько)
         card = s.get(Card, int(args[0])) if args and args[0].isdigit() else None

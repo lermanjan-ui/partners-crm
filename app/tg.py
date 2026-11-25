@@ -87,6 +87,8 @@ class Telegram:
             {"command": "find", "description": "Найти контакт: /find имя, компания, телефон"},
             {"command": "todo", "description": "Что сделать сейчас: наш ход, просрочено, ждём ответа"},
             {"command": "last", "description": "Последние визитки"},
+            {"command": "programs", "description": "Ближайшие дедлайны акселераторов и программ"},
+            {"command": "program", "description": "Добавить программу по ссылке: /program https://…"},
             {"command": "new", "description": "Создать контакт без визитки: /new Имя"},
             {"command": "list", "description": "Скриншоты списка участников группы → много контактов"},
             {"command": "done", "description": "Выключить режим списка"},

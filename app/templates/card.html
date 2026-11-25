@@ -10,6 +10,7 @@
 {% if card.unreadable %}<p class="note-box warn">⚠️ Проверьте поля: {% for f in card.unreadable %}{{ FIELD_LABELS.get(f, f) }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
 {% for other, why in similar %}<p class="note-box">🔁 Похоже на <a href="/c/{{ other.id }}">{{ other.code }} {{ other.title }}</a> — {{ why }}</p>{% endfor %}
 
+{% if linked_programs %}<p class="added">🚀 Программы: {% for pr, role in linked_programs %}<a href="/programs/{{ pr.id }}">{{ pr.title }}</a>{% if role %} <span class="muted">({{ role }})</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
 {% set cc = card.country_info %}
 {% if cc[0] %}<p class="added">🌍 {{ card.country_label }}{% if cc[1] == 'phone' %} <span class="muted small">— по коду телефона, может отличаться от места жительства</span>{% elif cc[1] == 'address' %} <span class="muted small">— по адресу</span>{% endif %}</p>{% endif %}
 {% set wa = card.whatsapp_numbers %}

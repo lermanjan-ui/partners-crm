@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Новая программа{% endblock %}
+{% block content %}
+{% include "_ptabs.html" %}
+<form method="post" action="/programs/new" class="panel" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Читаю страницу…'">
+  <h1>Новая программа</h1>
+  <label>Ссылка на страницу набора <span class="muted">— ИИ заполнит дедлайн, страну, условия и требования</span>
+    <input name="url" type="url" placeholder="https://…" autofocus></label>
+  <label>Название <span class="muted">(необязательно, если есть ссылка)</span><input name="title"></label>
+  <button class="btn">Создать</button>
+  <p class="muted small">Чтение страницы занимает до минуты. Если страница не откроется (например, форма Typeform или Notion), программа всё равно создастся со ссылкой — заполните поля вручную.</p>
+</form>
+{% endblock %}

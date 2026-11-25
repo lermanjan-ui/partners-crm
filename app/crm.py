@@ -160,12 +160,13 @@ def card_buttons(card: Card):
     return rows or None
 
 
-def link(s, chat_id: int, message_id: int, kind: str, card_id=None, note_id=None) -> None:
+def link(s, chat_id: int, message_id: int, kind: str, card_id=None, note_id=None, program_id=None) -> None:
     row = s.get(TgLink, (chat_id, message_id))
     if row is None:
-        s.add(TgLink(chat_id=chat_id, message_id=message_id, kind=kind, card_id=card_id, note_id=note_id))
+        s.add(TgLink(chat_id=chat_id, message_id=message_id, kind=kind, card_id=card_id, note_id=note_id,
+                     program_id=program_id))
     else:
-        row.kind, row.card_id, row.note_id = kind, card_id, note_id
+        row.kind, row.card_id, row.note_id, row.program_id = kind, card_id, note_id, program_id
 
 
 def add_attachment(s, card_id, kind, data: bytes, filename=None, mime=None) -> Attachment:

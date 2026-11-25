@@ -342,9 +342,11 @@ def card_page(request: Request, card_id: int):
         notes = list(s.scalars(select(Note).where(Note.card_id == card_id).order_by(Note.created_at.desc())))
         att_by_id = {a.id: a for a in atts}
         similar = crm.similar(s, card)
+        from .web_programs import programs_for_card
+        linked_programs = programs_for_card(s, card_id)
     photos = [a for a in atts if a.kind == "card"]
     return render(request, "card.html", card=card, photos=photos, notes=notes, att_by_id=att_by_id,
-                  similar=similar, TEXT_FIELDS=TEXT_FIELDS, LIST_FIELDS=LIST_FIELDS)
+                  similar=similar, TEXT_FIELDS=TEXT_FIELDS, LIST_FIELDS=LIST_FIELDS, linked_programs=linked_programs)
 
 
 @router.post("/c/{card_id}")

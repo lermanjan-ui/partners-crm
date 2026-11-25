@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}{{ p.title }} — {{ p.code }}{% endblock %}
+{% block content %}
+{% include "_ptabs.html" %}
+<h1>{{ p.title }} <span class="muted">{{ p.code }}</span></h1>
+<p class="added">⏰ <b>Заявки до: {{ deadline_text }}</b> · {{ p.country_label }}{% if p.city %}, {{ p.city }}{% endif %}
+  <span class="muted">· добавил {{ p.created_by or '—' }}{% if origin %} · повтор <a href="/programs/{{ origin.id }}">прошлого набора</a>{% endif %}</span></p>
+
+{% if p.needs_review %}
+<form method="post" action="/programs/{{ p.id }}/reviewed" class="note-box warn">⚠️ Заполнено ИИ по ссылке{% if p.repeated_from %} / скопировано с прошлого года{% endif %} — проверьте даты и условия.
+  <button class="link">👌 Проверено</button></form>
+{% endif %}
+
+<div class="pstatus">
+  {% for k, v in PROGRAM_STATUSES.items() %}
+  <form method="post" action="/programs/{{ p.id }}/status"><button class="chip {% if p.status == k %}on{% endif %}" name="to" value="{{ k }}">{{ v }}</button></form>
+  {% endfor %}
+</div>
+{% if p.submitted_at %}<p class="muted small">📤 Подано {{ p.submitted_at|dt('%d.%m.%Y %H:%M') }} · {{ p.submitted_by or '—' }}</p>{% endif %}
+{% if p.status in ('idea', 'preparing') and p.deadline_date %}<p class="muted small">🔔 Напоминания в Telegram за 10, 3 и 1 день до дедлайна, пока не отмечено «Подано» или «Пропустили».</p>{% endif %}
+
+<div class="grid">
+<section>
+  <form method="post" action="/programs/{{ p.id }}" class="panel fields">
+    <label>Название<input name="title" value="{{ p.title }}" required></label>
+    <div class="workrow">
+      <label class="grow">Страна<input name="country" value="{{ p.country or '' }}" placeholder="Portugal / онлайн — пусто"></label>
+      <label class="grow">Город<input name="city" value="{{ p.city or '' }}"></label>
+    </div>
+    <div class="seg-label">Дедлайн подачи</div>
+    <div class="workrow">
+      <label>Дата<input type="date" name="deadline_date" value="{{ p.deadline_date.isoformat() if p.deadline_date else '' }}"></label>
+      <label>Время<input type="time" name="deadline_time" value="{{ p.deadline_time or '' }}"></label>
+      <label class="grow">Часовой пояс организатора
+        <select name="deadline_tz">{% for k, v in TIMEZONES.items() %}<option value="{{ k }}" {% if (p.deadline_tz or default_tz) == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
+          {% if p.deadline_tz and p.deadline_tz not in TIMEZONES %}<option value="{{ p.deadline_tz }}" selected>{{ p.deadline_tz }}</option>{% endif %}</select></label>
+    </div>
+    <div class="seg-label">Условия</div>
+    <div class="workrow">
+      <label class="grow">Сколько дают<input name="funding" value="{{ p.funding or '' }}" placeholder="$100k / грант €50k"></label>
+      <label class="grow">Доля<input name="equity" value="{{ p.equity or '' }}" placeholder="7% / без доли"></label>
+    </div>
+    <div class="workrow">
+      <label class="grow">Стоимость участия<input name="fee" value="{{ p.fee or '' }}"></label>
+      <label class="grow">Длительность<input name="duration" value="{{ p.duration or '' }}" placeholder="3 месяца"></label>
+    </div>
+    <div class="seg-label">Формат</div>
+    <div class="seg">
+      <label><input type="radio" name="format" value="" {% if not p.format %}checked{% endif %}><span>—</span></label>
+      {% for k, v in FORMATS.items() %}<label><input type="radio" name="format" value="{{ k }}" {% if p.format == k %}checked{% endif %}><span>{{ v }}</span></label>{% endfor %}
+    </div>
+    <input type="hidden" name="stages_form" value="1">
+    <div class="seg-label">Для каких стадий стартапа <span class="muted">(можно несколько)</span></div>
+    <div class="seg">{% for k, v in STAGES.items() %}<label><input type="checkbox" name="stages" value="{{ k }}" {% if k in (p.stages or []) %}checked{% endif %}><span>{{ v }}</span></label>{% endfor %}</div>
+    <div class="seg-label">Ключевые даты</div>
+    <div class="workrow">
+      <label>📣 Результаты<input type="date" name="results_date" value="{{ p.results_date.isoformat() if p.results_date else '' }}"></label>
+      <label>🏁 Старт<input type="date" name="start_date" value="{{ p.start_date.isoformat() if p.start_date else '' }}"></label>
+      <label>🎤 Demo Day<input type="date" name="demo_day" value="{{ p.demo_day.isoformat() if p.demo_day else '' }}"></label>
+    </div>
+    <label>Описание<textarea name="description" rows="4">{{ p.description or '' }}</textarea></label>
+    <button class="btn">Сохранить</button>
+  </form>
+
+  <div class="workactions">
+    <form method="post" action="/programs/{{ p.id }}/repeat"><button class="btn ghost">🔁 Повторить в следующем году</button></form>
+    <form method="post" action="/programs/{{ p.id }}/delete" onsubmit="return confirm('Удалить программу «{{ p.title }}»?')"><button class="btn danger" style="margin:0">Удалить</button></form>
+  </div>
+</section>
+
+<section>
+  <div class="panel" id="checklist">
+    {% set cl = p.checklist_progress %}
+    <b>☑️ Чек-лист заявки</b> {% if cl[1] %}<span class="muted">· готово {{ cl[0] }} из {{ cl[1] }}</span>{% endif %}
+    {% for item in p.checklist or [] %}
+    <div class="citem">
+      <form method="post" action="/programs/{{ p.id }}/checklist"><button class="link ck" name="toggle" value="{{ loop.index0 }}">{{ '✅' if item.done else '⬜' }}</button></form>
+      <span class="{{ 'done' if item.done }}">{{ item.text }}</span>
+      <form method="post" action="/programs/{{ p.id }}/checklist"><button class="link muted" name="remove" value="{{ loop.index0 }}" title="Убрать">✕</button></form>
+    </div>
+    {% endfor %}
+    <form method="post" action="/programs/{{ p.id }}/checklist" class="inline-add">
+      <textarea name="add" rows="2" placeholder="Новые пункты, по одному в строке: питч-дек, видео 2 мин…"></textarea>
+      <button class="btn ghost">Добавить</button>
+    </form>
+  </div>
+
+  <div class="panel" id="links">
+    <b>🔗 Ссылки</b>
+    {% for l in p.links or [] %}
+    <div class="citem"><a href="{{ l.url }}" target="_blank" rel="noopener">{{ l.label or l.url }}</a>
+      <form method="post" action="/programs/{{ p.id }}/links"><button class="link muted" name="remove" value="{{ loop.index0 }}">✕</button></form></div>
+    {% endfor %}
+    <form method="post" action="/programs/{{ p.id }}/links" class="workrow">
+      <label class="grow">Подпись<input name="label" placeholder="Форма заявки"></label>
+      <label class="grow">Ссылка<input name="url" placeholder="https://…"></label>
+      <button class="btn ghost">Добавить</button>
+    </form>
+  </div>
+
+  <div class="panel" id="files">
+    <b>📎 Материалы</b>
+    {% for f in files %}
+    <div class="citem"><a href="/f/{{ f.id }}" target="_blank">{{ f.filename or ('файл ' ~ f.id) }}</a> <span class="muted small">{{ (f.size / 1048576)|round(1) }} МБ</span>
+      <form method="post" action="/programs/{{ p.id }}/files"><button class="link muted" name="detach" value="{{ f.id }}" title="Открепить">✕</button></form></div>
+    {% else %}<p class="muted small">Пока нет. Можно загрузить или ответить в боте файлом на сообщение о программе.</p>{% endfor %}
+    <form method="post" action="/programs/{{ p.id }}/files" enctype="multipart/form-data" class="workrow">
+      <label class="grow">Загрузить (до {{ max_mb }} МБ; видео — ссылкой выше)<input type="file" name="file"></label>
+      <button class="btn ghost">Загрузить</button>
+    </form>
+    {% if library %}
+    <form method="post" action="/programs/{{ p.id }}/files" class="workrow">
+      <label class="grow">Или прикрепить уже загруженное
+        <select name="attach">{% for a in library %}<option value="{{ a.id }}">{{ a.filename or ('файл ' ~ a.id) }} · {{ a.created_at|dt('%d.%m') }}</option>{% endfor %}</select></label>
+      <button class="btn ghost">Прикрепить</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <div class="panel" id="contacts">
+    <b>👥 Связанные контакты</b>
+    {% for c, role in contacts %}
+    <div class="citem"><a href="/c/{{ c.id }}">{{ c.code }} {{ c.title }}</a>{% if role %} <span class="muted">— {{ role }}</span>{% endif %}
+      <form method="post" action="/programs/{{ p.id }}/contacts"><button class="link muted" name="remove" value="{{ c.id }}">✕</button></form></div>
+    {% endfor %}
+    <form method="post" action="/programs/{{ p.id }}/contacts" class="workrow">
+      <label class="grow">Контакт<input name="query" placeholder="#P12, имя или компания"></label>
+      <label class="grow">Роль<input name="role" placeholder="ментор, порекомендовал…"></label>
+      <button class="btn ghost">Привязать</button>
+    </form>
+  </div>
+
+  <form method="post" action="/programs/{{ p.id }}/note" class="panel" id="history">
+    <label>Заметка<textarea name="text" rows="2" placeholder="Что сделали, что ответили…"></textarea></label>
+    <button class="btn">Добавить</button>
+  </form>
+  {% for n in notes %}
+  <div class="note {{ 'n-' ~ n.kind }}">
+    <div class="muted small">{{ n.author or '—' }} · {{ n.created_at|dt('%d.%m.%Y %H:%M') }}</div>
+    {% if n.summary %}<div class="text sum">{{ n.summary }}</div>{% endif %}
+    {% if n.text %}<div class="text">{{ n.text }}</div>{% endif %}
+    {% if n.transcript %}<details class="small" {% if not n.summary %}open{% endif %}><summary>Расшифровка</summary><div class="text">{{ n.transcript }}</div></details>{% endif %}
+    {% if n.attachment_id and att_by_id.get(n.attachment_id) %}<audio controls preload="none" src="/f/{{ n.attachment_id }}"></audio>{% endif %}
+  </div>
+  {% endfor %}
+</section>
+</div>
+{% endblock %}

@@ -2,7 +2,7 @@
 import io
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 os.environ["DATABASE_URL"] = os.getenv("TEST_DATABASE_URL") or "sqlite:///" + os.path.join(tempfile.mkdtemp(), "t.db")
 os.environ["TELEGRAM_BOT_TOKEN"] = "x"
@@ -1187,3 +1187,219 @@ def test_multi_select_filters(env):
     # страница «Работа»
     work_names = {n for n in ("MS мужчина", "MS женщина") if n in client.get("/work?temp=hot&temp=warm&gender=female").text}
     assert work_names == {"MS женщина"}
+
+
+# ---------- Программы: акселераторы, инкубаторы ----------
+
+PARSED = {"title": "Startup Lisboa — Batch 12", "country": "Portugal", "city": "Lisbon", "deadline_date": "2026-12-05",
+          "deadline_time": "23:59", "deadline_timezone": "WET", "results_date": "2027-01-10", "start_date": "2027-02-01",
+          "demo_day": "2027-05-20", "funding": "€30k", "equity": "no equity", "fee": None, "duration": "4 months",
+          "format": "hybrid", "stages": ["preseed", "seed"],
+          "links": [{"label": "Форма заявки", "url": "https://forms.example.com/apply"}],
+          "requirements": ["Питч-дек", "Видео 2 мин"], "description": "Акселератор в Лиссабоне."}
+
+
+def test_program_deadline_math_and_reminders():
+    from app import programs as pr
+    from app.db import Program
+    p = Program(title="X", deadline_date=date(2026, 12, 5), deadline_time="23:59", deadline_tz="Europe/Lisbon", status="idea")
+    loc = pr.local_deadline(p)
+    assert (loc.day, loc.hour, loc.minute) == (6, 4, 59)  # 23:59 Лиссабон = 04:59 следующего дня в Ташкенте
+    text = pr.deadline_text(p, date(2026, 11, 25))
+    assert "сб 05.12, 23:59 (Лиссабон" in text and "у нас вс 06.12 04:59" in text and "через 11 дн." in text
+    assert pr.norm_tz("CET") == "Europe/Berlin" and pr.norm_tz("AoE") == "Etc/GMT+12" and pr.norm_tz("bogus") is None
+    assert pr.norm_time("9:30") == "09:30" and pr.norm_time("25:00") is None
+    assert pr.deadline_text(Program(title="Y")) == "дедлайн не указан"
+
+
+def _remind(at_day, hour=10):
+    from app import programs as pr
+    from app.work import TZ
+    with SessionLocal() as s:
+        out = [(p.id, n) for p, n in pr.due_reminders(s, datetime(2026, at_day.month, at_day.day, hour, 0, tzinfo=TZ))]
+        s.commit()
+    return out
+
+
+def test_program_reminders_10_3_1():
+    from app.db import Program
+    with SessionLocal() as s:
+        p = Program(title="Remind me", deadline_date=date(2026, 12, 15), status="preparing")
+        done = Program(title="Already submitted", deadline_date=date(2026, 12, 15), status="submitted")
+        s.add_all([p, done])
+        s.commit()
+        pid = p.id
+    mine = lambda r: [n for i, n in r if i == pid]  # noqa: E731
+    assert mine(_remind(date(2026, 12, 4))) == []      # 11 дней — рано
+    assert mine(_remind(date(2026, 12, 5))) == [10]
+    assert mine(_remind(date(2026, 12, 5))) == []      # второй раз не шлём
+    assert mine(_remind(date(2026, 12, 12))) == [3]  # осталось 3 дня
+    assert mine(_remind(date(2026, 12, 14))) == [1]
+    assert mine(_remind(date(2026, 12, 16))) == []     # дедлайн прошёл
+    assert all(i != done.id for i, _ in _remind(date(2026, 12, 12)))
+    # пропустили «за 10» (добавили поздно) — уходит одно напоминание, «за 3»
+    with SessionLocal() as s:
+        late = Program(title="Late", deadline_date=date(2026, 12, 15), status="idea")
+        s.add(late)
+        s.commit()
+        lid = late.id
+    assert [n for i, n in _remind(date(2026, 12, 13)) if i == lid] == [2]  # одно напоминание, «осталось 2 дня»
+    with SessionLocal() as s:
+        assert s.get(Program, lid).reminders_sent == [3, 10]
+
+
+def test_programs_bot_flow(env):
+    from app import programs as pr
+    from app.db import Program, ProgramFile
+    client, tg = env
+    pr.fetch_page = lambda url: "page text"
+    ai.parse_program = lambda text, url: PARSED
+    post(client, **msg(1400, text="/program https://startuplisboa.example/apply"))
+    assert "Читаю страницу" in tg.sent[-2]["text"] or "Читаю страницу" in tg.sent[-1]["text"]
+    added = tg.sent[-1]
+    assert "Startup Lisboa — Batch 12" in added["text"] and "🇵🇹" in added["text"] and "Заполнено ИИ" in added["text"]
+    assert "у нас" in added["text"] and "☑️ Чек-лист: 0/2" in added["text"]
+    with SessionLocal() as s:
+        p = s.query(Program).filter_by(title="Startup Lisboa — Batch 12").one()
+        assert (p.deadline_tz, p.equity, p.format, p.stages) == ("Europe/Lisbon", "no equity", "hybrid", ["preseed", "seed"])
+        assert p.needs_review and len(p.links) == 2 and p.demo_day == date(2027, 5, 20)
+        pid = p.id
+
+    def cb(data):
+        post(client, "callback_query", id="p", data=data,
+             **{"from": {"id": 1, "first_name": "U1"}, "message": {"message_id": added["id"], "chat": {"id": 1}}})
+        with SessionLocal() as s:
+            return s.get(Program, pid)
+
+    p = cb(f"pgok:{pid}")
+    assert not p.needs_review
+    p = cb(f"pg:{pid}:submitted")
+    assert p.status == "submitted" and p.submitted_at and p.submitted_by == "U1"
+    # ответ на сообщение о программе: текст — заметка, файл — материал
+    post(client, **msg(1401, reply_to=added["id"], text="Отправили, ждём ответа в январе"))
+    post(client, **msg(1402, reply_to=added["id"], document={"file_id": "deck", "mime_type": "application/pdf",
+                                                              "file_name": "deck.pdf", "file_size": 10}))
+    with SessionLocal() as s:
+        assert s.query(Note).filter_by(program_id=pid, text="Отправили, ждём ответа в январе").count() == 1
+        assert s.query(ProgramFile).filter_by(program_id=pid).count() == 1
+        assert s.query(Note).filter_by(tg_message_id=1401).one().card_id is None
+    assert "Материал добавлен" in tg.sent[-1]["text"]
+    # /programs и сломанная ссылка
+    with SessionLocal() as s:
+        s.add(Program(title="Soon program", deadline_date=work_today() + timedelta(days=5), status="idea"))
+        s.commit()
+    post(client, **msg(1403, text="/programs"))
+    assert "Soon program" in tg.sent[-1]["text"] and "Startup Lisboa" not in tg.sent[-1]["text"]  # поданное не в списке
+    pr.fetch_page = lambda url: (_ for _ in ()).throw(pr.FetchError("страница ответила 403"))
+    post(client, **msg(1404, text="/program https://typeform.example/x"))
+    assert "Страницу прочитать не удалось" in tg.sent[-1]["text"]
+
+
+def work_today():
+    from app.work import today
+    return today()
+
+
+def test_program_reminder_and_digest_via_tick(env):
+    from app import work
+    from app.db import AppState, Program
+    client, tg = env
+    with SessionLocal() as s:
+        p = Program(title="Tick program", deadline_date=date(2026, 12, 11), status="preparing")
+        s.add(p)
+        st = s.get(AppState, "digest_date")
+        if st:
+            s.delete(st)
+        s.commit()
+    before = len(tg.sent)
+    sat = datetime(2026, 12, 5, 9, 5, tzinfo=work.TZ)  # суббота: напоминание приходит и в выходной
+    work.tick(tg, crm.LOCK, at=sat)
+    sent = tg.sent[before:]
+    assert any("Tick program" in m["text"] and "До дедлайна 6 дн." in m["text"] for m in sent)
+    assert any(b[1].startswith("pg:") for m in sent for row in (m["buttons"] or []) for b in row)
+    mon = datetime(2026, 12, 7, 9, 5, tzinfo=work.TZ)
+    before = len(tg.sent)
+    work.tick(tg, crm.LOCK, at=mon)
+    assert any("Дедлайны программ" in m["text"] and "Tick program" in m["text"] for m in tg.sent[before:])
+
+
+def test_programs_site(env):
+    from app import programs as pr
+    from app.db import Answer, Attachment, Program, ProgramContact, ProgramFile
+    client, _ = env
+    client.post("/login", data={"username": "anna", "password": "pw"})
+    r = client.post("/programs/new", data={"title": "Hub71 Cohort"}, follow_redirects=False)
+    pid = int(r.headers["location"].rsplit("/", 1)[1])
+    client.post(f"/programs/{pid}", data={"title": "Hub71 Cohort", "country": "UAE", "city": "Abu Dhabi",
+                                         "deadline_date": "2026-12-20", "deadline_time": "18:00", "deadline_tz": "Asia/Dubai",
+                                         "funding": "$100k", "equity": "без доли", "format": "offline",
+                                         "stages_form": "1", "stages": ["seed", "pmf"], "demo_day": "2027-04-01",
+                                         "status": "preparing"})
+    with SessionLocal() as s:
+        p = s.get(Program, pid)
+        assert (p.country_code, p.deadline_time, p.deadline_tz, p.stages, p.status) == ("AE", "18:00", "Asia/Dubai", ["seed", "pmf"], "preparing")
+    # чек-лист, ссылки, материалы, контакты, заметка
+    client.post(f"/programs/{pid}/checklist", data={"add": "Питч-дек\nФинмодель\nВидео"})
+    client.post(f"/programs/{pid}/checklist", data={"toggle": "0"})
+    client.post(f"/programs/{pid}/checklist", data={"remove": "2"})
+    client.post(f"/programs/{pid}/links", data={"label": "Форма", "url": "hub71.com/apply"})
+    client.post(f"/programs/{pid}/files", files={"file": ("deck.pdf", b"%PDF-1.4 deck", "application/pdf")})
+    with SessionLocal() as s:
+        card = Card(full_name="Ментор Hub71", company="Hub71")
+        s.add(card)
+        s.commit()
+        cid = card.id
+    client.post(f"/programs/{pid}/contacts", data={"query": f"#P{cid}", "role": "ментор"})
+    client.post(f"/programs/{pid}/note", data={"text": "Созвонились с ментором"})
+    with SessionLocal() as s:
+        p = s.get(Program, pid)
+        assert p.checklist == [{"text": "Питч-дек", "done": True}, {"text": "Финмодель", "done": False}]
+        assert p.links == [{"label": "Форма", "url": "https://hub71.com/apply"}]
+        att_id = s.query(ProgramFile).filter_by(program_id=pid).one().attachment_id
+        assert s.query(ProgramContact).filter_by(program_id=pid, card_id=cid).one().role == "ментор"
+    page = client.get(f"/programs/{pid}").text
+    assert "готово 1 из 2" in page and "deck.pdf" in page and "Ментор Hub71" in page and "Созвонились с ментором" in page
+    assert "Дубай" in page and "у нас" in page
+    assert "Hub71 Cohort" in client.get(f"/c/{cid}").text  # в карточке контакта видна программа
+    # тот же дек — ко второй программе без копии
+    r = client.post("/programs/new", data={"title": "Second program"}, follow_redirects=False)
+    pid2 = int(r.headers["location"].rsplit("/", 1)[1])
+    assert "deck.pdf" in client.get(f"/programs/{pid2}").text  # есть в списке «прикрепить уже загруженное»
+    client.post(f"/programs/{pid2}/files", data={"attach": str(att_id)})
+    with SessionLocal() as s:
+        assert s.query(ProgramFile).filter_by(program_id=pid2, attachment_id=att_id).count() == 1
+    # повтор в следующем году
+    r = client.post(f"/programs/{pid}/repeat", follow_redirects=False)
+    nid = int(r.headers["location"].rsplit("/", 1)[1])
+    with SessionLocal() as s:
+        n = s.get(Program, nid)
+        assert n.deadline_date == date(2027, 12, 20) and n.demo_day == date(2028, 4, 1) and n.status == "idea"
+        assert all(not i["done"] for i in n.checklist) and n.repeated_from == pid and n.needs_review
+        assert s.query(ProgramContact).filter_by(program_id=nid).count() == 1
+        assert s.query(ProgramFile).filter_by(program_id=nid).count() == 1
+    # список, фильтры, календарь, ICS
+    page = client.get("/programs?country=AE").text
+    assert "Hub71 Cohort" in page and "Second program" not in page
+    assert "Добавлены:" not in page and "× сбросить все фильтры" in page  # дат у программ нет, сброс — есть
+    assert "Добавлены:" in client.get("/").text
+    assert "Hub71 Cohort" not in client.get("/programs?status=submitted").text
+    cal = client.get("/calendar?month=2026-12").text
+    assert "Декабрь 2026" in cal and "Hub71 Cohort" in cal and "⏰" in cal
+    assert "🎤 Hub71" in client.get("/calendar?month=2027-04").text
+    assert client.get("/calendar.ics?token=wrong").status_code == 403
+    ics = client.get(f"/calendar.ics?token={pr.ics_token()}").text
+    assert "BEGIN:VCALENDAR" in ics and "DTSTART:20261220T133000Z" in ics  # 18:00 Дубай = 14:00 UTC, событие с 13:30
+    assert "DTEND:20261220T140000Z" in ics and "Demo Day" in ics and all(len(l.encode()) <= 75 for l in ics.split("\r\n"))
+    # банк ответов
+    client.post("/answers", data={"question": "Describe your product", "answer_ru": "CRM для выставок", "answer_en": "CRM for events"})
+    with SessionLocal() as s:
+        aid = s.query(Answer).one().id
+    client.post("/answers", data={"aid": str(aid), "question": "Describe your product", "answer_en": "Event CRM"})
+    page = client.get("/answers?q=event").text
+    assert "Event CRM" in page and "Копировать" in page
+    client.post(f"/answers/{aid}/delete")
+    with SessionLocal() as s:
+        assert s.query(Answer).count() == 0
+    client.post(f"/programs/{pid2}/delete")
+    with SessionLocal() as s:
+        assert s.get(Program, pid2) is None and s.get(Attachment, att_id) is not None  # общий дек остался
